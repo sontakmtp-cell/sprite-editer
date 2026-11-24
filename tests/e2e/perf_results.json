@@ -1,0 +1,164 @@
+[
+  {
+    "browser": "Chrome",
+    "runs": 3,
+    "open_html_offline": {
+      "runs_ms": [
+        185.53,
+        156.93,
+        157.46
+      ],
+      "median_ms": 157.46,
+      "worst_ms": 185.53
+    },
+    "import_73_1024_png": {
+      "runs_ms": [
+        386.79,
+        738.35,
+        747.48
+      ],
+      "median_ms": 738.35,
+      "worst_ms": 747.48
+    },
+    "drag_5s_cached_cell": {
+      "frames": 302,
+      "median_ms": 16.7,
+      "p95_ms": 18,
+      "max_ms": 23.9
+    },
+    "preview_12fps_8frames": {
+      "transitions": 19,
+      "sequenceSample": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        0,
+        1,
+        2,
+        3
+      ],
+      "cachePixelsBefore": 66575376,
+      "cachePixelsAfter": 66575376
+    },
+    "export_png_1536x2288": {
+      "runs_ms": [
+        367.48,
+        532.82,
+        534.95
+      ],
+      "median_ms": 532.82,
+      "worst_ms": 534.95
+    },
+    "save_ssb_73": {
+      "runs_ms": [
+        178.08,
+        151.59,
+        100.46
+      ],
+      "median_ms": 151.59,
+      "worst_ms": 178.08
+    },
+    "open_ssb_73": {
+      "runs_ms": [
+        321.33,
+        673.37,
+        674.28
+      ],
+      "median_ms": 673.37,
+      "worst_ms": 674.28
+    },
+    "final_cache_stats": {
+      "cachedPixels": 1055632,
+      "maxCachePixels": 67108864,
+      "cacheEntries": 2,
+      "rawSourceCount": 73,
+      "evictionCount": 356
+    }
+  },
+  {
+    "browser": "Edge",
+    "runs": 3,
+    "open_html_offline": {
+      "runs_ms": [
+        177.22,
+        178.53,
+        177.23
+      ],
+      "median_ms": 177.23,
+      "worst_ms": 178.53
+    },
+    "import_73_1024_png": {
+      "runs_ms": [
+        388.61,
+        618.41,
+        604.02
+      ],
+      "median_ms": 604.02,
+      "worst_ms": 618.41
+    },
+    "drag_5s_cached_cell": {
+      "frames": 302,
+      "median_ms": 16.7,
+      "p95_ms": 17.6,
+      "max_ms": 24.6
+    },
+    "preview_12fps_8frames": {
+      "transitions": 18,
+      "sequenceSample": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        0,
+        1,
+        2,
+        3
+      ],
+      "cachePixelsBefore": 66568320,
+      "cachePixelsAfter": 66575376
+    },
+    "export_png_1536x2288": {
+      "runs_ms": [
+        342.3,
+        553.93,
+        543.14
+      ],
+      "median_ms": 543.14,
+      "worst_ms": 553.93
+    },
+    "save_ssb_73": {
+      "runs_ms": [
+        153.64,
+        132.49,
+        120.87
+      ],
+      "median_ms": 132.49,
+      "worst_ms": 153.64
+    },
+    "open_ssb_73": {
+      "runs_ms": [
+        316.97,
+        586.62,
+        577.24
+      ],
+      "median_ms": 577.24,
+      "worst_ms": 586.62
+    },
+    "final_cache_stats": {
+      "cachedPixels": 2111264,
+      "maxCachePixels": 67108864,
+      "cacheEntries": 4,
+      "rawSourceCount": 73,
+      "evictionCount": 360
+    }
+  }
+]

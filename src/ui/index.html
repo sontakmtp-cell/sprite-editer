@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <script>
+    try {
+      var savedScheme = localStorage.getItem('ssb-color-scheme');
+      if (savedScheme === 'light' || savedScheme === 'dark') {
+        document.querySelector('meta[name="color-scheme"]').content = savedScheme;
+      }
+    } catch (e) {}
+  </script>
+  <title>Sprite Sheet Builder V2.0</title>
+  <!-- INLINE_CSS_PLACEHOLDER -->
+</head>
+<body>
+  <div class="app-shell" id="app-shell">
+    <!-- Top Toolbar -->
+    <header class="topbar" role="toolbar" aria-label="Thanh công cụ chính">
+      <div class="topbar-brand" title="Sprite Sheet Builder V2.0 — Offline">
+        <span>Sprite Sheet Builder</span>
+        <span class="badge badge-accent">V2.0</span>
+      </div>
+
+      <div class="project-title-wrap">
+        <label for="project-name-input" class="sr-only">Tên project</label>
+        <input id="project-name-input" class="project-name-input" type="text" value="Project mới" maxlength="200" title="Đổi tên project">
+        <span id="dirty-badge" class="dirty-badge" title="Trạng thái lưu project">Chưa chỉnh sửa</span>
+      </div>
+
+      <div class="topbar-group">
+        <button id="btn-new-project" type="button" title="Tạo project mới">Project mới</button>
+        <button id="btn-open-project" type="button" title="Mở project .ssb (Ctrl+O)">Mở</button>
+        <button id="btn-save-project" type="button" title="Lưu project .ssb (Ctrl+S)">Lưu</button>
+        <button id="btn-save-copy" type="button" title="Lưu bản sao .ssb không đổi tên project hiện tại">Lưu bản sao</button>
+      </div>
+
+      <div class="topbar-group">
+        <button id="btn-undo" type="button" disabled title="Hoàn tác (Ctrl+Z)">Undo</button>
+        <button id="btn-redo" type="button" disabled title="Làm lại (Ctrl+Y / Ctrl+Shift+Z)">Redo</button>
+      </div>
+
+      <div class="topbar-group">
+        <button id="btn-presets" type="button" title="Chọn Hatch Pet V2 hoặc quản lý preset tùy chỉnh">Preset</button>
+        <button id="btn-preflight" type="button" title="Kiểm tra lỗi và cảnh báo trước khi xuất">Kiểm tra</button>
+        <button id="btn-settings" type="button" title="Cài đặt project, đường gióng mặc định và phục hồi sự cố">Cài đặt</button>
+      </div>
+
+      <div class="topbar-spacer"></div>
+
+      <div class="topbar-group">
+        <button id="btn-theme-toggle" type="button" title="Chuyển giao diện Tối / Sáng">Giao diện: Tối</button>
+        <button id="btn-export" type="button" class="btn-primary" title="Xuất Atlas PNG/WebP, Strip, Frame riêng, ZIP hoặc JSON metadata">Xuất...</button>
+      </div>
+    </header>
+
+    <!-- Hidden native file inputs (offline file:// standard APIs) -->
+    <input id="file-open-project" type="file" accept=".ssb,.zip" class="hidden" aria-hidden="true">
+    <input id="file-import-images" type="file" accept=".png,.webp,.jpg,.jpeg,image/png,image/webp,image/jpeg" multiple class="hidden" aria-hidden="true">
+    <input id="file-import-single" type="file" accept=".png,.webp,.jpg,.jpeg,image/png,image/webp,image/jpeg" class="hidden" aria-hidden="true">
+    <input id="file-import-preset" type="file" accept=".json,application/json" class="hidden" aria-hidden="true">
+    <input id="file-slice-image" type="file" accept=".png,.webp,.jpg,.jpeg,image/png,image/webp,image/jpeg" class="hidden" aria-hidden="true">
+
+    <!-- Main Body -->
+    <div class="workspace-body">
+      <div class="workspace-columns">
+        <!-- Left Panel: Library -->
+        <aside id="panel-left" class="panel panel-left" aria-label="Thư viện ảnh">
+          <div class="panel-header">
+            <span class="panel-title">Thư viện ảnh</span>
+            <button id="btn-collapse-left" type="button" class="btn-xs" title="Thu gọn / mở rộng Thư viện ảnh" aria-expanded="true">◀</button>
+          </div>
+          <div class="panel-content">
+            <div class="lib-toolbar">
+              <div class="lib-actions">
+                <button id="btn-lib-import" type="button" class="btn-primary btn-sm" title="Nhập một hoặc nhiều ảnh PNG/WebP/JPG vào thư viện">+ Nhập ảnh</button>
+                <button id="btn-lib-slice" type="button" class="btn-sm" title="Tách ảnh atlas hoặc animation strip thành nhiều frame vùng cắt">Tách atlas</button>
+                <button id="btn-lib-fill" type="button" class="btn-sm" title="Điền các ảnh đã chọn trong thư viện vào lưới (Batch Fill)">Điền lưới</button>
+              </div>
+              <label for="lib-search" class="sr-only">Tìm ảnh theo tên</label>
+              <input id="lib-search" type="search" placeholder="Tìm theo tên file...">
+              <div class="lib-filters">
+                <label for="lib-filter" class="sr-only">Lọc trạng thái sử dụng</label>
+                <select id="lib-filter" title="Lọc theo trạng thái sử dụng">
+                  <option value="all">Tất cả</option>
+                  <option value="unused">Chưa dùng</option>
+                  <option value="used">Đã dùng</option>
+                </select>
+                <label for="lib-sort" class="sr-only">Sắp xếp thư viện</label>
+                <select id="lib-sort" title="Thứ tự sắp xếp">
+                  <option value="natural">Tên tự nhiên</option>
+                  <option value="import">Thứ tự nhập</option>
+                  <option value="reverse-natural">Tên ngược lại</option>
+                </select>
+              </div>
+            </div>
+            <div id="lib-list" class="lib-list" role="listbox" aria-multiselectable="true" aria-label="Danh sách nguồn ảnh"></div>
+          </div>
+        </aside>
+
+        <div id="splitter-left" class="splitter-v" role="separator" aria-orientation="vertical" title="Kéo để thay đổi chiều rộng Thư viện ảnh"></div>
+
+        <!-- Center Panel: Sprite Atlas Grid -->
+        <main id="panel-center" class="panel panel-center" aria-label="Lưới Sprite Atlas">
+          <div class="atlas-bar">
+            <span class="inline-field">
+              <label for="grid-cols">Cột</label>
+              <input id="grid-cols" type="number" min="1" max="64" step="1" value="4">
+            </span>
+            <span class="inline-field">
+              <label for="grid-rows">Hàng</label>
+              <input id="grid-rows" type="number" min="1" max="64" step="1" value="4">
+            </span>
+            <span class="inline-field">
+              <label for="grid-cell-w">Rộng</label>
+              <input id="grid-cell-w" type="number" min="1" max="8192" step="1" value="192">
+            </span>
+            <span class="inline-field">
+              <label for="grid-cell-h">Cao</label>
+              <input id="grid-cell-h" type="number" min="1" max="8192" step="1" value="208">
+            </span>
+            <button id="btn-grid-apply" type="button" class="btn-sm btn-primary" title="Áp dụng thông số lưới mới">Áp dụng</button>
+            <span id="atlas-dim-preview" class="atlas-dim-info" title="Kích thước pixel atlas đầu ra">768×832 px</span>
+            <span id="grid-error-inline" class="field-error hidden" role="alert"></span>
+          </div>
+
+          <div class="atlas-bar">
+            <span class="inline-field">
+              <label for="atlas-zoom">Zoom</label>
+              <input id="atlas-zoom" type="range" min="25" max="400" step="5" value="100" style="width:82px" title="Zoom hiển thị lưới (25–400%, không đổi pixel xuất)">
+              <span id="atlas-zoom-label" style="min-width:38px;font-family:var(--font-mono);font-size:11.5px;">100%</span>
+            </span>
+            <button id="btn-atlas-fit" type="button" class="btn-xs" title="Thu vừa toàn bộ atlas">Fit</button>
+            <button id="btn-atlas-100" type="button" class="btn-xs" title="Đặt zoom hiển thị 100%">100%</button>
+            <button id="btn-toggle-grid" type="button" class="btn-xs btn-toggle" aria-pressed="true" title="Bật/tắt đường kẻ lưới">Lưới</button>
+            <button id="btn-toggle-labels" type="button" class="btn-xs btn-toggle" aria-pressed="true" title="Bật/tắt đánh số hàng/cột và nhãn nhóm">Nhãn</button>
+            <button id="btn-toggle-guides" type="button" class="btn-xs btn-toggle" aria-pressed="false" title="Bật/tắt đường gióng trên lưới">Đường gióng</button>
+            <button id="btn-toggle-checker" type="button" class="btn-xs btn-toggle" aria-pressed="true" title="Bật/tắt nền caro (chỉ xem trước, không xuất)">Caro</button>
+            <label for="atlas-bg-color" class="sr-only">Màu nền xem trước</label>
+            <input id="atlas-bg-color" type="color" value="#1e222a" title="Màu nền xem trước khi tắt caro (không ảnh hưởng export)" style="width:26px;height:22px;padding:0;border:1px solid var(--border);cursor:pointer;">
+            <button id="btn-toggle-marquee" type="button" class="btn-xs btn-toggle" aria-pressed="false" title="Bật chế độ kéo chọn nhiều ô (hoặc Ctrl/Shift + Click)">Chọn vùng</button>
+            <button id="btn-open-sync" type="button" class="btn-xs" title="Đồng bộ transform, tỷ lệ hoặc anchor cho nhiều ô">Đồng bộ...</button>
+          </div>
+
+          <div id="atlas-stage-wrap" class="atlas-stage-wrap" tabindex="0" aria-label="Vùng hiển thị lưới sprite atlas">
+            <canvas id="atlas-canvas"></canvas>
+          </div>
+        </main>
+
+        <div id="splitter-right" class="splitter-v" role="separator" aria-orientation="vertical" title="Kéo để thay đổi chiều rộng Panel chỉnh sửa"></div>
+
+        <!-- Right Panel: Frame Editor -->
+        <aside id="panel-right" class="panel panel-right" aria-label="Chỉnh sửa frame">
+          <div class="panel-header">
+            <span class="panel-title">Chỉnh sửa frame</span>
+            <button id="btn-collapse-right" type="button" class="btn-xs" title="Thu gọn / mở rộng Chỉnh sửa frame" aria-expanded="true">▶</button>
+          </div>
+          <div class="panel-content">
+            <div id="editor-empty" class="editor-empty">
+              Chọn một ô có ảnh trên lưới để căn chỉnh, hoặc nhấp đúp ô trống để nhập ảnh.
+            </div>
+
+            <div id="editor-body" class="editor-scroll hidden">
+              <!-- Live Cell Preview + optional side-by-side Reference -->
+              <div class="editor-canvas-pair">
+                <div class="editor-canvas-box">
+                  <div class="editor-canvas-frame">
+                    <canvas id="editor-canvas" width="240" height="260" aria-label="Xem trước ô đang chỉnh sửa"></canvas>
+                  </div>
+                  <div id="editor-cell-caption" style="font-size:11.5px;color:var(--text-muted);font-family:var(--font-mono);"></div>
+                </div>
+                <div id="editor-ref-side-box" class="editor-canvas-box hidden">
+                  <div class="editor-canvas-frame">
+                    <canvas id="editor-ref-canvas" width="160" height="173" aria-label="Xem cạnh nhau frame tham chiếu"></canvas>
+                  </div>
+                  <div style="font-size:11px;color:var(--text-muted);">Tham chiếu</div>
+                </div>
+              </div>
+
+              <!-- Warnings inside Editor -->
+              <div id="editor-warnings" class="alert-box is-warn hidden"></div>
+
+              <!-- Source Info -->
+              <div class="editor-section">
+                <div class="editor-section-title">
+                  <span>Thông tin nguồn</span>
+                  <button id="btn-editor-replace-img" type="button" class="btn-xs" title="Thay ảnh cho ô này">Thay ảnh</button>
+                </div>
+                <div id="editor-source-info" style="font-size:11.5px;color:var(--text-muted);word-break:break-word;"></div>
+              </div>
+
+              <!-- Transform Controls -->
+              <div class="editor-section">
+                <div class="editor-section-title">
+                  <span>Transform &amp; Fit Mode</span>
+                  <div style="display:flex;gap:4px;">
+                    <button id="btn-ed-center" type="button" class="btn-xs" title="Đặt X=0, Y=0 (giữ zoom và fit mode)">Căn giữa</button>
+                    <button id="btn-ed-reset" type="button" class="btn-xs" title="Đặt lại về Contain, 100%, offset 0, bỏ anchor tùy chỉnh">Đặt lại</button>
+                  </div>
+                </div>
+
+                <div class="form-grid-2">
+                  <div class="form-field">
+                    <label for="ed-fit-mode">Chế độ Fit</label>
+                    <select id="ed-fit-mode">
+                      <option value="contain">Contain (toàn vùng)</option>
+                      <option value="alpha">Vừa vùng nội dung (Fit Alpha)</option>
+                    </select>
+                  </div>
+                  <div class="form-field">
+                    <label for="ed-alpha-threshold">Ngưỡng alpha (0–254)</label>
+                    <input id="ed-alpha-threshold" type="number" min="0" max="254" step="1" value="8">
+                  </div>
+                </div>
+
+                <div class="form-grid-2">
+                  <div class="form-field">
+                    <label for="ed-offset-x">Offset X (px đầu ra)</label>
+                    <input id="ed-offset-x" type="number" step="0.5" value="0">
+                  </div>
+                  <div class="form-field">
+                    <label for="ed-offset-y">Offset Y (px đầu ra)</label>
+                    <input id="ed-offset-y" type="number" step="0.5" value="0">
+                  </div>
+                </div>
+
+                <div class="form-field">
+                  <label for="ed-zoom-num">Zoom (25–1000%)</label>
+                  <div class="form-row">
+                    <input id="ed-zoom-range" type="range" min="25" max="1000" step="1" value="100" style="flex:1;" aria-label="Thanh trượt Zoom">
+                    <input id="ed-zoom-num" type="number" min="25" max="1000" step="1" value="100" style="width:68px;">
+                    <span>%</span>
+                  </div>
+                </div>
+                <div style="font-size:11px;color:var(--text-subtle);">
+                  Mẹo: Kéo chuột trên khung xem trước hoặc dùng phím Mũi tên (1 px) / Shift+Mũi tên (10 px).
+                </div>
+              </div>
+
+              <!-- Anchor & Guides Alignment -->
+              <div class="editor-section">
+                <div class="editor-section-title">
+                  <span>Anchor &amp; Đường gióng</span>
+                  <button id="btn-ed-pick-anchor" type="button" class="btn-xs btn-toggle" aria-pressed="false" title="Click lên khung xem trước để đặt điểm anchor tùy chỉnh trên nguồn">Đặt điểm anchor</button>
+                </div>
+
+                <div class="form-field">
+                  <label for="ed-anchor-mode">Anchor nguồn</label>
+                  <select id="ed-anchor-mode">
+                    <option value="fit-center">Tâm vùng fit</option>
+                    <option value="alpha-bottom-center">Đáy giữa vùng alpha</option>
+                    <option value="custom">Tùy chỉnh (px nguồn)</option>
+                  </select>
+                </div>
+
+                <div id="ed-custom-anchor-row" class="form-grid-2 hidden">
+                  <div class="form-field">
+                    <label for="ed-anchor-x">Anchor X (nguồn)</label>
+                    <input id="ed-anchor-x" type="number" step="0.5" value="0">
+                  </div>
+                  <div class="form-field">
+                    <label for="ed-anchor-y">Anchor Y (nguồn)</label>
+                    <input id="ed-anchor-y" type="number" step="0.5" value="0">
+                  </div>
+                </div>
+
+                <div class="form-row">
+                  <button id="btn-align-both" type="button" class="btn-xs" title="Căn anchor lên giao điểm trục dọc & baseline">Căn gióng X+Y</button>
+                  <button id="btn-align-x" type="button" class="btn-xs" title="Chỉ căn X của anchor vào trục dọc">Chỉ căn X</button>
+                  <button id="btn-align-y" type="button" class="btn-xs" title="Chỉ căn Y của anchor vào baseline">Chỉ căn Y</button>
+                </div>
+                <div class="form-row">
+                  <label for="ed-align-tx">Đích tùy chỉnh X:</label>
+                  <input id="ed-align-tx" type="number" step="1" style="width:54px;" value="96">
+                  <label for="ed-align-ty">Y:</label>
+                  <input id="ed-align-ty" type="number" step="1" style="width:54px;" value="187">
+                  <button id="btn-align-custom" type="button" class="btn-xs" title="Căn anchor đến tọa độ tùy chỉnh trong ô">Căn đích</button>
+                </div>
+              </div>
+
+              <!-- Reference Frame & Onion Skin -->
+              <div class="editor-section">
+                <div class="editor-section-title">
+                  <span>Tham chiếu &amp; Onion Skin</span>
+                  <button id="btn-ed-side-by-side" type="button" class="btn-xs btn-toggle" aria-pressed="false" title="Xem cạnh nhau frame hiện tại và frame tham chiếu">Cạnh nhau</button>
+                </div>
+                <div class="form-row">
+                  <button id="btn-ref-set-current" type="button" class="btn-xs" title="Đặt ô đang chọn làm frame tham chiếu cố định">Ghim ô này</button>
+                  <button id="btn-ref-prev" type="button" class="btn-xs" title="Dùng frame trước trong nhóm animation làm tham chiếu">← Trước</button>
+                  <button id="btn-ref-next" type="button" class="btn-xs" title="Dùng frame sau trong nhóm animation làm tham chiếu">Sau →</button>
+                  <button id="btn-ref-clear" type="button" class="btn-xs" title="Tắt frame tham chiếu">Bỏ</button>
+                </div>
+                <div id="editor-ref-info" style="font-size:11.5px;color:var(--text-muted);">Chưa chọn frame tham chiếu.</div>
+                <div class="form-row">
+                  <label><input id="ed-onion-enable" type="checkbox"> Bật Onion Skin</label>
+                  <label for="ed-onion-opacity" style="margin-left:auto;">Độ mờ:</label>
+                  <input id="ed-onion-opacity" type="range" min="10" max="90" step="5" value="40" style="width:76px;">
+                  <span id="ed-onion-opacity-label" style="font-family:var(--font-mono);font-size:11px;">40%</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Draft Commit / Revert Bar -->
+            <div id="editor-draft-bar" class="draft-bar hidden">
+              <span id="draft-status-text" style="font-size:11.5px;font-weight:600;">Đã đồng bộ</span>
+              <div style="display:flex;gap:4px;">
+                <button id="btn-draft-undo" type="button" class="btn-xs" disabled title="Hoàn tác một bước trong bản nháp">Hoàn nháp</button>
+                <button id="btn-draft-cancel" type="button" class="btn-xs" disabled title="Hủy các thay đổi nháp chưa áp dụng">Hủy</button>
+                <button id="btn-draft-apply" type="button" class="btn-xs btn-primary" disabled title="Áp dụng bản nháp vào project (1 giao dịch Undo)">Áp dụng</button>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+      <div id="splitter-bottom" class="splitter-h" role="separator" aria-orientation="horizontal" title="Kéo để thay đổi chiều cao Panel Preview Animation"></div>
+
+      <!-- Bottom Panel: Animation Preview & Timeline -->
+      <section id="panel-bottom" class="panel-bottom" aria-label="Xem thử Animation">
+        <div class="panel-header">
+          <span>Preview Animation &amp; Timeline</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span id="anim-warning-inline" class="badge badge-warn hidden"></span>
+            <button id="btn-collapse-bottom" type="button" class="btn-xs" title="Thu gọn / mở rộng Preview Animation" aria-expanded="true">▼</button>
+          </div>
+        </div>
+        <div class="panel-content">
+          <div class="anim-body">
+            <div class="anim-preview-col">
+              <div class="anim-canvas-box">
+                <canvas id="anim-canvas" width="144" height="144" aria-label="Canvas xem thử animation"></canvas>
+              </div>
+              <div id="anim-frame-counter" style="font-size:11px;font-family:var(--font-mono);color:var(--text-muted);">0 / 0</div>
+            </div>
+
+            <div class="anim-right-col">
+              <div class="anim-controls-row">
+                <label for="anim-group-select" class="sr-only">Nhóm animation</label>
+                <select id="anim-group-select" style="min-width:140px;" title="Chọn nhóm animation"></select>
+                <button id="btn-anim-new" type="button" class="btn-xs" title="Tạo nhóm animation mới">+ Nhóm</button>
+                <button id="btn-anim-from-row" type="button" class="btn-xs" title="Tạo nhanh nhóm từ hàng của ô đang chọn">Từ hàng</button>
+                <button id="btn-anim-from-sel" type="button" class="btn-xs" title="Tạo nhanh nhóm từ các ô đang chọn">Từ vùng chọn</button>
+                <button id="btn-anim-dup" type="button" class="btn-xs" title="Nhân bản nhóm hiện tại">Nhân bản</button>
+                <button id="btn-anim-edit" type="button" class="btn-xs" title="Đổi tên, override đường gióng và ngưỡng cảnh báo nhóm">Sửa nhóm</button>
+                <button id="btn-anim-del" type="button" class="btn-xs btn-danger" title="Xóa nhóm animation (không xóa ảnh trong atlas)">Xóa nhóm</button>
+              </div>
+
+              <div class="anim-controls-row">
+                <button id="btn-anim-play" type="button" class="btn-sm btn-primary" title="Phát / Tạm dừng animation">▶ Phát</button>
+                <button id="btn-anim-stop" type="button" class="btn-xs" title="Dừng và quay về frame đầu">■ Dừng</button>
+                <button id="btn-anim-prev" type="button" class="btn-xs" title="Frame trước">◀</button>
+                <button id="btn-anim-next" type="button" class="btn-xs" title="Frame sau">▶</button>
+
+                <span class="inline-field">
+                  <label for="anim-fps">FPS</label>
+                  <input id="anim-fps" type="number" min="1" max="60" step="1" value="8" style="width:50px;">
+                </span>
+
+                <label for="anim-loop-mode" class="sr-only">Chế độ lặp</label>
+                <select id="anim-loop-mode" title="Chế độ lặp animation">
+                  <option value="loop">Lặp (Loop)</option>
+                  <option value="once">Một lần (Once)</option>
+                  <option value="pingpong">Qua lại (Ping-pong)</option>
+                </select>
+
+                <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;">
+                  <input id="anim-custom-dur" type="checkbox" checked> Duration riêng
+                </label>
+
+                <span class="inline-field">
+                  <label for="anim-zoom">Zoom</label>
+                  <select id="anim-zoom" style="width:68px;">
+                    <option value="fit">Vừa</option>
+                    <option value="0.5">50%</option>
+                    <option value="1">100%</option>
+                    <option value="2">200%</option>
+                  </select>
+                </span>
+
+                <button id="btn-anim-guides" type="button" class="btn-xs btn-toggle" aria-pressed="true" title="Hiện/ẩn đường gióng trong preview">Gióng</button>
+                <button id="btn-anim-bg" type="button" class="btn-xs" title="Đổi nền preview animation (Caro / Tối / Sáng)">Nền: Caro</button>
+                <button id="btn-anim-add-sel" type="button" class="btn-xs" title="Thêm các ô đang chọn vào cuối timeline nhóm">+ Thêm ô chọn</button>
+              </div>
+
+              <div id="timeline-strip" class="timeline-strip" aria-label="Timeline các frame trong nhóm"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Status Bar -->
+    <footer class="statusbar" role="status" aria-live="polite">
+      <span id="status-project-name">Project mới</span>
+      <span class="status-sep">•</span>
+      <span id="status-save-state">Chưa chỉnh sửa</span>
+      <span class="status-sep">•</span>
+      <span id="status-cells">0/16 ô</span>
+      <span class="status-sep">•</span>
+      <span id="status-atlas-dim">768×832 px</span>
+      <span class="status-sep">•</span>
+      <button id="status-preflight-btn" type="button" class="btn-xs" title="Mở bảng Preflight kiểm tra lỗi và cảnh báo">Cảnh báo: 0</button>
+      <span class="status-sep">•</span>
+      <span id="status-recovery">Đang kiểm tra recovery...</span>
+
+      <div id="status-progress-wrap" class="status-progress hidden">
+        <span id="status-progress-text">Đang xử lý...</span>
+        <progress id="status-progress-bar" value="0" max="100"></progress>
+        <button id="btn-cancel-job" type="button" class="btn-xs btn-danger">Hủy</button>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Cell Context Menu -->
+  <div id="cell-context-menu" class="context-menu" role="menu" aria-label="Menu ngữ cảnh ô">
+    <button type="button" role="menuitem" data-ctx="replace">Thay ảnh cho ô...</button>
+    <button type="button" role="menuitem" data-ctx="clear">Xóa nội dung ô</button>
+    <hr>
+    <button type="button" role="menuitem" data-ctx="copy">Sao chép ô (Ctrl+C)</button>
+    <button type="button" role="menuitem" data-ctx="paste">Dán ô (Ctrl+V)</button>
+    <button type="button" role="menuitem" data-ctx="copy-transform">Sao chép căn chỉnh</button>
+    <button type="button" role="menuitem" data-ctx="paste-transform">Dán căn chỉnh</button>
+    <button type="button" role="menuitem" data-ctx="duplicate">Nhân bản sang ô trống kế tiếp</button>
+    <button type="button" role="menuitem" data-ctx="swap">Hoán đổi với ô khác...</button>
+    <hr>
+    <button type="button" role="menuitem" data-ctx="set-ref">Đặt làm frame tham chiếu</button>
+    <button type="button" role="menuitem" data-ctx="add-to-anim">Thêm vào nhóm animation hiện tại</button>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="false"></div>
+
+  <!-- Native Modal Dialogs -->
+  <dialog id="dialog-confirm" aria-labelledby="confirm-title">
+    <div class="dialog-header">
+      <h1 id="confirm-title">Xác nhận</h1>
+    </div>
+    <div id="confirm-body" class="dialog-body"></div>
+    <div id="confirm-footer" class="dialog-footer"></div>
+  </dialog>
+
+  <dialog id="dialog-batch" aria-labelledby="batch-title" style="min-width:680px;">
+    <div class="dialog-header">
+      <h1 id="batch-title">Xem trước Nhập hàng loạt (Batch Import)</h1>
+      <button type="button" class="btn-xs" data-close-dialog="dialog-batch" aria-label="Đóng">✕</button>
+    </div>
+    <div class="dialog-body" id="batch-body"></div>
+    <div class="dialog-footer" id="batch-footer"></div>
+  </dialog>
+
+  <dialog id="dialog-slice" aria-labelledby="slice-title" style="min-width:740px;">
+    <div class="dialog-header">
+      <h1 id="slice-title">Tách Atlas / Animation Strip (Slice Engine)</h1>
+      <button type="button" class="btn-xs" data-close-dialog="dialog-slice" aria-label="Đóng">✕</button>
+    </div>
+    <div class="dialog-body" id="slice-body"></div>
+    <div class="dialog-footer" id="slice-footer"></div>
+  </dialog>
+
+  <dialog id="dialog-region" aria-labelledby="region-title" style="min-width:520px;">
+    <div class="dialog-header">
+      <h1 id="region-title">Chỉnh vùng cắt thủ công</h1>
+      <button type="button" class="btn-xs" data-close-dialog="dialog-region" aria-label="Đóng">✕</button>
+    </div>
+    <div class="dialog-body" id="region-body"></div>
+    <div class="dialog-footer" id="region-footer"></div>
+  </dialog>
+
+  <dialog id="dialog-sync" aria-labelledby="sync-title" style="min-width:680px;">
+    <div class="dialog-header">
+      <h1 id="sync-title">Đồng bộ căn chỉnh (Transform Sync)</h1>
+      <button type="button" class="btn-xs" data-close-dialog="dialog-sync" aria-label="Đóng">✕</button>
+    </div>
+    <div class="dialog-body" id="sync-body"></div>
+    <div class="dialog-footer" id="sync-footer"></div>
+  </dialog>
+
+  <dialog id="dialog-presets" aria-labelledby="presets-title" style="min-width:600px;">
+    <div class="dialog-header">
+      <h1 id="presets-title">Quản lý Preset</h1>
+      <button type="button" class="btn-xs" data-close-dialog="dialog-presets" aria-label="Đóng">✕</button>
+    </div>
+    <div class="dialog-body" id="presets-body"></div>
+    <div class="dialog-footer" id="presets-footer"></div>
+  </dialog>
+
+  <dialog id="dialog-preflight" aria-labelledby="preflight-title" style="min-width:640px;">
+    <div class="dialog-header">
+      <h1 id="preflight-title">Kiểm tra trước khi xuất (Preflight)</h1>
+      <button type="button" class="btn-xs" data-close-dialog="dialog-preflight" aria-label="Đóng">✕</button>
+    </div>
+    <div class="dialog-body" id="preflight-body"></div>
+    <div class="dialog-footer" id="preflight-footer"></div>
+  </dialog>
+
+  <dialog id="dialog-export" aria-labelledby="export-title" style="min-width:640px;">
+    <div class="dialog-header">
+      <h1 id="export-title">Xuất tài nguyên</h1>
+      <button type="button" class="btn-xs" data-close-dialog="dialog-export" aria-label="Đóng">✕</button>
+    </div>
+    <div class="dialog-body" id="export-body"></div>
+    <div class="dialog-footer" id="export-footer"></div>
+  </dialog>
+
+  <dialog id="dialog-settings" aria-labelledby="settings-title" style="min-width:520px;">
+    <div class="dialog-header">
+      <h1 id="settings-title">Cài đặt Project &amp; Phục hồi sự cố</h1>
+      <button type="button" class="btn-xs" data-close-dialog="dialog-settings" aria-label="Đóng">✕</button>
+    </div>
+    <div class="dialog-body" id="settings-body"></div>
+    <div class="dialog-footer" id="settings-footer"></div>
+  </dialog>
+
+  <dialog id="dialog-anim-settings" aria-labelledby="anim-settings-title" style="min-width:440px;">
+    <div class="dialog-header">
+      <h1 id="anim-settings-title">Cài đặt nhóm Animation</h1>
+      <button type="button" class="btn-xs" data-close-dialog="dialog-anim-settings" aria-label="Đóng">✕</button>
+    </div>
+    <div class="dialog-body" id="anim-settings-body"></div>
+    <div class="dialog-footer" id="anim-settings-footer"></div>
+  </dialog>
+
+  <!-- INLINE_JS_PLACEHOLDER -->
+</body>
+</html>

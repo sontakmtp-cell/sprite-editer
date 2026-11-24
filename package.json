@@ -1,0 +1,18 @@
+{
+  "name": "sprite-sheet-builder",
+  "version": "2.0.0",
+  "description": "Sprite Sheet Builder V2.0 — Ứng dụng web chạy offline ghép và căn chỉnh sprite sheet",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test:unit": "node --test tests/unit/*.test.mjs",
+    "test:fixtures": "node tests/fixtures/generate-fixtures.mjs",
+    "test:e2e": "python tests/e2e/run_e2e.py",
+    "test:perf": "python tests/e2e/run_perf.py",
+    "test": "npm run build && npm run test:unit && npm run test:fixtures && npm run test:e2e"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

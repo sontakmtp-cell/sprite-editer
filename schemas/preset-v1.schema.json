@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sprite-sheet-builder.local/schemas/preset-v1.schema.json",
+  "title": "Sprite Sheet Builder Custom Preset V1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "schemaVersion", "id", "name", "grid", "expectedCells", "animations", "guides"],
+  "properties": {
+    "format": { "const": "sprite-sheet-builder-preset" },
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+$" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "description": { "type": "string", "maxLength": 500 },
+    "grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cols", "rows", "cellWidth", "cellHeight"],
+      "properties": {
+        "cols": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "rows": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "cellWidth": { "type": "integer", "minimum": 1, "maximum": 8192 },
+        "cellHeight": { "type": "integer", "minimum": 1, "maximum": 8192 }
+      }
+    },
+    "expectedCells": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[0-9]+:[0-9]+$" }
+    },
+    "defaultFps": { "type": "number", "minimum": 1, "maximum": 60 },
+    "guides": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "animations": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "fps", "loopMode", "frames"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "fps": { "type": "number", "minimum": 1, "maximum": 60 },
+          "loopMode": { "enum": ["loop", "once", "pingpong"] },
+          "guides": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["x", "y"],
+            "properties": {
+              "x": { "type": "number", "minimum": 0, "maximum": 1 },
+              "y": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          },
+          "frames": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["row", "col", "durationMs"],
+              "properties": {
+                "row": { "type": "integer", "minimum": 0, "maximum": 63 },
+                "col": { "type": "integer", "minimum": 0, "maximum": 63 },
+                "durationMs": { "type": ["number", "null"], "minimum": 10, "maximum": 10000 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,234 @@
+[
+  {
+    "browser": "Chrome",
+    "results": {
+      "T01": {
+        "status": "PASS",
+        "evidence": "Loaded file:// offline in 192 ms, 0 network requests, 0 page errors"
+      },
+      "T02": {
+        "status": "PASS",
+        "evidence": "Exported spritesheet_3x2_100x80.png 300x160; content y=15..64 solid, y=14 & y=65 alpha=0, empty cell alpha=0"
+      },
+      "T03": {
+        "status": "PASS",
+        "evidence": "Drag scaled accurately (previewScale=2.80), draft isolated, Cancel/Apply OK, export identical at 25% & 250% zoom"
+      },
+      "T04": {
+        "status": "PASS",
+        "evidence": "Zero bleed from adjacent contrasting slice (px[99,50]=(255,0,0,255)), zero overflow into neighbor cell, zero overlay leak"
+      },
+      "T05": {
+        "status": "PASS",
+        "evidence": "PNG alpha=(0,128,255) exact; WebP RIFF/WEBP alpha=(0,128,255) within ±2"
+      },
+      "T06": {
+        "status": "PASS",
+        "evidence": "All 5 invalid files (corrupt, fake SVG, APNG, anim WebP, 9000px) rejected cleanly; existing cell preserved"
+      },
+      "T07": {
+        "status": "PASS",
+        "evidence": "Hatch Pet V2 1536x2288 verified: all 73 expected cells pixel-exact, all 15 unused cells alpha=0, 11 groups metadata OK"
+      },
+      "T08": {
+        "status": "PASS",
+        "evidence": "Null blob, WebP->PNG fallback, and thrown encoder error all blocked cleanly; session intact; re-export succeeded"
+      },
+      "T09": {
+        "status": "PASS",
+        "evidence": "Shrink removed 57 cells, offset scaled (10,20)->(20,10), Undo restored all 73 cells"
+      },
+      "T10": {
+        "status": "PASS",
+        "evidence": "Invalid blocked until explicit click, natural order {'c00': 'frame1', 'c01': 't02_rect_400x200', 'c02': 'frame2', 'c03': 'frame10'}, occupied skipped, 1-step Undo OK"
+      },
+      "T11": {
+        "status": "PASS",
+        "evidence": "Margin/gap/remainder confirmed, alpha=0 slot skipped -> 3 exact region assets sharing 1 binary source"
+      },
+      "T12": {
+        "status": "PASS",
+        "evidence": "Bbox(thr=8)=(60,40,80,120) vs exact visible(alpha>0) x=5; all-transparent returns null bounds"
+      },
+      "T13": {
+        "status": "PASS",
+        "evidence": "Transform Sync scaled char_b to zoom=2.000, aligned anchor, skipped out-of-range char_tiny (zoom=1)"
+      },
+      "T14": {
+        "status": "PASS",
+        "evidence": "Onion Skin enabled on ref cell 0:1 and auto-disabled safely upon ref cell deletion"
+      },
+      "T15": {
+        "status": "PASS",
+        "evidence": "Swap + 60 history entries, Undo->51, new branch cleared Redo"
+      },
+      "T16": {
+        "status": "PASS",
+        "evidence": "Saved Test.ssb (6846 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
+      },
+      "T17": {
+        "status": "PASS",
+        "evidence": "All 5 bad .ssb archives (non-ZIP, missing source, v99, path traversal, region OOB) rejected; active project untouched"
+      },
+      "T18": {
+        "status": "PASS",
+        "evidence": "IndexedDB recovery available on file://; atomic snapshot saved, verified readable, and cleared cleanly"
+      },
+      "T19": {
+        "status": "PASS",
+        "evidence": "Animation preview displays empty-slot warning without skipping slot; timeline renders both slots"
+      },
+      "T20": {
+        "status": "PASS",
+        "evidence": "Exported Test_bundle.zip with 10 verified entries (atlas, JSON, dedup strips, group frames)"
+      },
+      "T21": {
+        "status": "PASS",
+        "evidence": "Stale decode discarded safely when project switched mid-flight; 0 cells polluted"
+      },
+      "T22": {
+        "status": "PASS",
+        "evidence": "73x 1024x1024 imported & exported 1536x2288; LRU cache stayed at 63.2/64.0 Mi px (56 evictions)"
+      },
+      "T23": {
+        "status": "PASS",
+        "evidence": "UI blocks cols=65 with inline error & disabled Apply button; recovers cleanly"
+      },
+      "T24": {
+        "status": "PASS",
+        "evidence": "Preflight detected ['ANIMATION_EMPTY_SLOT', 'OUTSIDE_CELL', 'PRESET_MISSING_EXPECTED', 'PRESET_UNUSED_OCCUPIED'] and 'Đi tới ô' navigated cleanly"
+      },
+      "T25": {
+        "status": "PASS",
+        "evidence": "At 1280x720 Save/Export fully visible (export right=1270px); input typing not hijacked"
+      },
+      "T26": {
+        "status": "PASS",
+        "evidence": "JPEG EXIF rot=6 decoded & exported as 200x100 (left blue, right red); Dark/Light theme export byte-identical"
+      },
+      "T27": {
+        "status": "PASS",
+        "evidence": "Project remained dirty ('• Chưa lưu') after PNG export"
+      }
+    },
+    "network_requests": [],
+    "page_errors": [],
+    "console_errors": []
+  },
+  {
+    "browser": "Edge",
+    "results": {
+      "T01": {
+        "status": "PASS",
+        "evidence": "Loaded file:// offline in 189 ms, 0 network requests, 0 page errors"
+      },
+      "T02": {
+        "status": "PASS",
+        "evidence": "Exported spritesheet_3x2_100x80.png 300x160; content y=15..64 solid, y=14 & y=65 alpha=0, empty cell alpha=0"
+      },
+      "T03": {
+        "status": "PASS",
+        "evidence": "Drag scaled accurately (previewScale=2.80), draft isolated, Cancel/Apply OK, export identical at 25% & 250% zoom"
+      },
+      "T04": {
+        "status": "PASS",
+        "evidence": "Zero bleed from adjacent contrasting slice (px[99,50]=(255,0,0,255)), zero overflow into neighbor cell, zero overlay leak"
+      },
+      "T05": {
+        "status": "PASS",
+        "evidence": "PNG alpha=(0,128,255) exact; WebP RIFF/WEBP alpha=(0,128,255) within ±2"
+      },
+      "T06": {
+        "status": "PASS",
+        "evidence": "All 5 invalid files (corrupt, fake SVG, APNG, anim WebP, 9000px) rejected cleanly; existing cell preserved"
+      },
+      "T07": {
+        "status": "PASS",
+        "evidence": "Hatch Pet V2 1536x2288 verified: all 73 expected cells pixel-exact, all 15 unused cells alpha=0, 11 groups metadata OK"
+      },
+      "T08": {
+        "status": "PASS",
+        "evidence": "Null blob, WebP->PNG fallback, and thrown encoder error all blocked cleanly; session intact; re-export succeeded"
+      },
+      "T09": {
+        "status": "PASS",
+        "evidence": "Shrink removed 57 cells, offset scaled (10,20)->(20,10), Undo restored all 73 cells"
+      },
+      "T10": {
+        "status": "PASS",
+        "evidence": "Invalid blocked until explicit click, natural order {'c00': 'frame1', 'c01': 't02_rect_400x200', 'c02': 'frame2', 'c03': 'frame10'}, occupied skipped, 1-step Undo OK"
+      },
+      "T11": {
+        "status": "PASS",
+        "evidence": "Margin/gap/remainder confirmed, alpha=0 slot skipped -> 3 exact region assets sharing 1 binary source"
+      },
+      "T12": {
+        "status": "PASS",
+        "evidence": "Bbox(thr=8)=(60,40,80,120) vs exact visible(alpha>0) x=5; all-transparent returns null bounds"
+      },
+      "T13": {
+        "status": "PASS",
+        "evidence": "Transform Sync scaled char_b to zoom=2.000, aligned anchor, skipped out-of-range char_tiny (zoom=1)"
+      },
+      "T14": {
+        "status": "PASS",
+        "evidence": "Onion Skin enabled on ref cell 0:1 and auto-disabled safely upon ref cell deletion"
+      },
+      "T15": {
+        "status": "PASS",
+        "evidence": "Swap + 60 history entries, Undo->51, new branch cleared Redo"
+      },
+      "T16": {
+        "status": "PASS",
+        "evidence": "Saved Test.ssb (6846 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
+      },
+      "T17": {
+        "status": "PASS",
+        "evidence": "All 5 bad .ssb archives (non-ZIP, missing source, v99, path traversal, region OOB) rejected; active project untouched"
+      },
+      "T18": {
+        "status": "PASS",
+        "evidence": "IndexedDB recovery available on file://; atomic snapshot saved, verified readable, and cleared cleanly"
+      },
+      "T19": {
+        "status": "PASS",
+        "evidence": "Animation preview displays empty-slot warning without skipping slot; timeline renders both slots"
+      },
+      "T20": {
+        "status": "PASS",
+        "evidence": "Exported Test_bundle.zip with 10 verified entries (atlas, JSON, dedup strips, group frames)"
+      },
+      "T21": {
+        "status": "PASS",
+        "evidence": "Stale decode discarded safely when project switched mid-flight; 0 cells polluted"
+      },
+      "T22": {
+        "status": "PASS",
+        "evidence": "73x 1024x1024 imported & exported 1536x2288; LRU cache stayed at 63.2/64.0 Mi px (56 evictions)"
+      },
+      "T23": {
+        "status": "PASS",
+        "evidence": "UI blocks cols=65 with inline error & disabled Apply button; recovers cleanly"
+      },
+      "T24": {
+        "status": "PASS",
+        "evidence": "Preflight detected ['ANIMATION_EMPTY_SLOT', 'OUTSIDE_CELL', 'PRESET_MISSING_EXPECTED', 'PRESET_UNUSED_OCCUPIED'] and 'Đi tới ô' navigated cleanly"
+      },
+      "T25": {
+        "status": "PASS",
+        "evidence": "At 1280x720 Save/Export fully visible (export right=1270px); input typing not hijacked"
+      },
+      "T26": {
+        "status": "PASS",
+        "evidence": "JPEG EXIF rot=6 decoded & exported as 200x100 (left blue, right red); Dark/Light theme export byte-identical"
+      },
+      "T27": {
+        "status": "PASS",
+        "evidence": "Project remained dirty ('• Chưa lưu') after PNG export"
+      }
+    },
+    "network_requests": [],
+    "page_errors": [],
+    "console_errors": []
+  }
+]
