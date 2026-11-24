@@ -5,6 +5,7 @@
 
 import { LIMITS, cellKey, parseCellKey } from './constants.js';
 import { computeCellGeometry, analyzeRectInCell } from './geometry.js';
+import { hasCellMask } from './mask.js';
 import { validateGrid } from './validator.js';
 
 function computeMedian(values) {
@@ -103,7 +104,7 @@ export function runPreflight({
       continue;
     }
 
-    const pixInfo = inspectAssetPixels ? inspectAssetPixels(asset.id, cell.alphaThreshold) : { ok: true };
+    const pixInfo = inspectAssetPixels ? inspectAssetPixels(asset.id, cell.alphaThreshold, cell, key) : { ok: true };
     cellPixelInfos.set(key, pixInfo);
 
     if (pixInfo.missingSource) {
@@ -115,15 +116,30 @@ export function runPreflight({
       continue;
     }
 
+    const cellHasMask = hasCellMask(cell);
     if (pixInfo.allTransparent) {
       warnings.push({
-        code: 'ALL_TRANSPARENT',
-        message: `Nguồn ảnh tại ô (${label}) hoàn toàn trong suốt (alpha = 0).`,
+        code: cellHasMask ? 'MASK_ALL_TRANSPARENT' : 'ALL_TRANSPARENT',
+        message: cellHasMask
+          ? `Ô (${label}) đã bị tẩy hết phần nhìn thấy — sẽ xuất ô trong suốt (vẫn có thể Khôi phục hoặc Bỏ toàn bộ vết tẩy).`
+          : `Nguồn ảnh tại ô (${label}) hoàn toàn trong suốt (alpha = 0).`,
         cellKey: key
       });
+      if (cellHasMask) {
+        // Erased-empty cell must NOT block atlas export even when fitMode === 'alpha'
+        continue;
+      }
     }
 
     if (cell.fitMode === 'alpha' && !pixInfo.alphaBounds) {
+      if (cellHasMask) {
+        warnings.push({
+          code: 'MASK_NO_ALPHA_BOUNDS',
+          message: `Ô (${label}) dùng Fit Alpha nhưng sau khi tẩy không còn pixel vượt ngưỡng alpha ${cell.alphaThreshold} — sẽ xuất ô trong suốt.`,
+          cellKey: key
+        });
+        continue;
+      }
       errors.push({
         code: 'INVALID_FIT_ALPHA',
         message: `Ô (${label}) dùng Fit Alpha nhưng không có pixel vượt ngưỡng alpha ${cell.alphaThreshold}.`,

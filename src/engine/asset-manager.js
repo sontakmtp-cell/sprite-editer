@@ -10,6 +10,11 @@ import {
   computeVisibleBoundsFromRGBA,
   isCompletelyTransparentRGBA
 } from '../core/geometry.js';
+import {
+  hasMaskStrokes,
+  getMaskSignature,
+  rasterizeMaskAlpha
+} from '../core/mask.js';
 
 function closeBitmapSafe(bmp) {
   if (bmp && typeof bmp.close === 'function') {
@@ -333,6 +338,99 @@ export class AssetManager {
   }
 
   /**
+   * Apply a vector erase/restore mask onto an isolated crop-sized canvas using Canvas 2D
+   * `destination-in` alpha compositing BEFORE any scaling, smoothing, or destination cell clip.
+   * Never mutates source bytes or shared unmasked region bitmaps.
+   */
+  _composeMaskedRegionCanvas(baseDrawable, region, mask) {
+    const { x, y, w, h } = region;
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = w;
+    outCanvas.height = h;
+    const outCtx = outCanvas.getContext('2d', { alpha: true });
+    outCtx.imageSmoothingEnabled = false;
+    const dr = baseDrawable.drawRegion;
+    outCtx.drawImage(baseDrawable.bitmap, dr.x, dr.y, dr.w, dr.h, 0, 0, w, h);
+
+    const maskAlpha = rasterizeMaskAlpha(w, h, x, y, mask.strokes);
+    const maskCanvas = document.createElement('canvas');
+    maskCanvas.width = w;
+    maskCanvas.height = h;
+    const maskCtx = maskCanvas.getContext('2d', { alpha: true });
+    const imgData = maskCtx.createImageData(w, h);
+    const data = imgData.data;
+    for (let i = 0; i < maskAlpha.length; i++) {
+      const a = maskAlpha[i];
+      if (a !== 0) {
+        const o = i * 4;
+        data[o] = 255;
+        data[o + 1] = 255;
+        data[o + 2] = 255;
+        data[o + 3] = a;
+      }
+    }
+    maskCtx.putImageData(imgData, 0, 0);
+
+    outCtx.globalCompositeOperation = 'destination-in';
+    outCtx.drawImage(maskCanvas, 0, 0);
+    outCtx.globalCompositeOperation = 'source-over';
+    maskCanvas.width = 0;
+    maskCanvas.height = 0;
+    return outCanvas;
+  }
+
+  /**
+   * Get drawable bitmap for a specific cell (with optional per-cell mask).
+   * - No mask: delegates directly to fast unmasked path `getAssetDrawable`.
+   * - With mask: caches crop-sized masked canvas keyed by source + crop + mask signature in LRU cache.
+   */
+  async getCellDrawable(asset, source, mask = null) {
+    if (!hasMaskStrokes(mask)) {
+      return this.getAssetDrawable(asset, source);
+    }
+    if (!asset || !source) return null;
+    const r = asset.region;
+    const maskSig = getMaskSignature(mask);
+    const cacheKey = `maskreg:${source.id}:${r.x},${r.y},${r.w},${r.h}:${maskSig}`;
+    const cached = this._cacheGet(cacheKey);
+    if (cached) {
+      return { bitmap: cached, drawRegion: { x: 0, y: 0, w: r.w, h: r.h }, isCropped: true, isMasked: true };
+    }
+    if (this.pendingDecodes.has(cacheKey)) {
+      const bmp = await this.pendingDecodes.get(cacheKey);
+      return bmp ? { bitmap: bmp, drawRegion: { x: 0, y: 0, w: r.w, h: r.h }, isCropped: true, isMasked: true } : null;
+    }
+
+    const promise = (async () => {
+      const baseDrawable = await this.getAssetDrawable(asset, source);
+      if (!baseDrawable) return null;
+      const maskedCanvas = this._composeMaskedRegionCanvas(baseDrawable, r, mask);
+      this._cacheSet(cacheKey, maskedCanvas, r.w * r.h, 'masked-region', source.id);
+      return maskedCanvas;
+    })().finally(() => {
+      this.pendingDecodes.delete(cacheKey);
+    });
+
+    this.pendingDecodes.set(cacheKey, promise);
+    const bmp = await promise;
+    return bmp ? { bitmap: bmp, drawRegion: { x: 0, y: 0, w: r.w, h: r.h }, isCropped: true, isMasked: true } : null;
+  }
+
+  /**
+   * Synchronous cache lookup for a cell drawable (with optional per-cell mask).
+   */
+  getCellDrawableSync(asset, source, mask = null) {
+    if (!hasMaskStrokes(mask)) {
+      return this.getAssetDrawableSync(asset, source);
+    }
+    if (!asset || !source) return null;
+    const r = asset.region;
+    const maskSig = getMaskSignature(mask);
+    const bmp = this._cacheGet(`maskreg:${source.id}:${r.x},${r.y},${r.w},${r.h}:${maskSig}`);
+    return bmp ? { bitmap: bmp, drawRegion: { x: 0, y: 0, w: r.w, h: r.h }, isCropped: true, isMasked: true } : null;
+  }
+
+  /**
    * Generate/fetch small thumbnail (max 96px) for Library panel (counts toward 64 Mi px LRU budget).
    */
   async getAssetThumbnailDataUrl(asset, source, maxDim = 96) {
@@ -363,9 +461,9 @@ export class AssetManager {
 
   /**
    * Compute and cache pixel analysis (exact transparency, visible bounds, alpha bounds for threshold)
-   * for an asset's region. Never runs on full atlas continuously (Spec §6.2, §12.2).
+   * for an asset's region (and optional per-cell mask). Keyed by source + crop + mask + threshold.
    */
-  async analyzeAssetPixels(asset, source, alphaThreshold = 8) {
+  async analyzeCellPixels(asset, source, alphaThreshold = 8, mask = null) {
     if (!asset || !source) {
       return { ok: false, missingSource: true };
     }
@@ -374,10 +472,16 @@ export class AssetManager {
     }
 
     const r = asset.region;
-    const regionKey = `${source.id}:${r.x},${r.y},${r.w},${r.h}`;
+    const maskSig = getMaskSignature(mask);
+    const regionKey = maskSig
+      ? `${source.id}:${r.x},${r.y},${r.w},${r.h}:${maskSig}`
+      : `${source.id}:${r.x},${r.y},${r.w},${r.h}`;
     let record = this.pixelAnalysisCache.get(regionKey);
 
     if (record && record.alphaBoundsByThreshold.has(alphaThreshold)) {
+      // Refresh LRU position
+      this.pixelAnalysisCache.delete(regionKey);
+      this.pixelAnalysisCache.set(regionKey, record);
       return {
         ok: true,
         allTransparent: record.allTransparent,
@@ -388,7 +492,7 @@ export class AssetManager {
 
     let drawable;
     try {
-      drawable = await this.getAssetDrawable(asset, source);
+      drawable = await this.getCellDrawable(asset, source, mask);
     } catch (err) {
       return { ok: false, decodeError: err.message || 'Lỗi giải mã' };
     }
@@ -414,6 +518,11 @@ export class AssetManager {
         visibleBounds,
         alphaBoundsByThreshold: new Map()
       };
+      // Cap pixelAnalysisCache to prevent unbounded growth during repeated draft edits
+      if (this.pixelAnalysisCache.size >= 2048) {
+        const oldestKey = this.pixelAnalysisCache.keys().next().value;
+        this.pixelAnalysisCache.delete(oldestKey);
+      }
       this.pixelAnalysisCache.set(regionKey, record);
     }
 
@@ -430,13 +539,20 @@ export class AssetManager {
     };
   }
 
+  async analyzeAssetPixels(asset, source, alphaThreshold = 8) {
+    return this.analyzeCellPixels(asset, source, alphaThreshold, null);
+  }
+
   /**
    * Synchronous read of cached pixel analysis (null if not analyzed yet).
    */
-  getCachedPixelAnalysis(asset, alphaThreshold = 8) {
+  getCachedCellPixelAnalysis(asset, alphaThreshold = 8, mask = null) {
     if (!asset) return null;
     const r = asset.region;
-    const regionKey = `${asset.sourceId}:${r.x},${r.y},${r.w},${r.h}`;
+    const maskSig = getMaskSignature(mask);
+    const regionKey = maskSig
+      ? `${asset.sourceId}:${r.x},${r.y},${r.w},${r.h}:${maskSig}`
+      : `${asset.sourceId}:${r.x},${r.y},${r.w},${r.h}`;
     const record = this.pixelAnalysisCache.get(regionKey);
     if (!record) return null;
     if (!record.alphaBoundsByThreshold.has(alphaThreshold)) return null;
@@ -446,6 +562,10 @@ export class AssetManager {
       visibleBounds: record.visibleBounds,
       alphaBounds: record.alphaBoundsByThreshold.get(alphaThreshold)
     };
+  }
+
+  getCachedPixelAnalysis(asset, alphaThreshold = 8) {
+    return this.getCachedCellPixelAnalysis(asset, alphaThreshold, null);
   }
 
   /**

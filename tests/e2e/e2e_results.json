@@ -4,7 +4,7 @@
     "results": {
       "T01": {
         "status": "PASS",
-        "evidence": "Loaded file:// offline in 163 ms, 0 network requests, 0 page errors"
+        "evidence": "Loaded file:// offline in 162 ms, 0 network requests, 0 page errors"
       },
       "T02": {
         "status": "PASS",
@@ -64,7 +64,7 @@
       },
       "T16": {
         "status": "PASS",
-        "evidence": "Saved Test.ssb (6849 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
+        "evidence": "Saved Test.ssb (6843 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
       },
       "T17": {
         "status": "PASS",
@@ -129,6 +129,18 @@
       "R5": {
         "status": "PASS",
         "evidence": "600 MiB fake .ssb rejected before arrayBuffer() and before dirty-discard prompt; project untouched"
+      },
+      "R7": {
+        "status": "PASS",
+        "evidence": "Project rename preserved unapplied X=12; explicit Apply still committed the offset"
+      },
+      "R8": {
+        "status": "PASS",
+        "evidence": "Valid .ssb open blocked edits during paused decode; final guard preserved a separately introduced draft"
+      },
+      "R9": {
+        "status": "PASS",
+        "evidence": "Dropping a single File after Apply imported to the second slot and preserved the first frame's committed offset"
       }
     },
     "network_requests": [],
@@ -140,7 +152,7 @@
     "results": {
       "T01": {
         "status": "PASS",
-        "evidence": "Loaded file:// offline in 194 ms, 0 network requests, 0 page errors"
+        "evidence": "Loaded file:// offline in 190 ms, 0 network requests, 0 page errors"
       },
       "T02": {
         "status": "PASS",
@@ -200,7 +212,7 @@
       },
       "T16": {
         "status": "PASS",
-        "evidence": "Saved Test.ssb (6842 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
+        "evidence": "Saved Test.ssb (6841 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
       },
       "T17": {
         "status": "PASS",
@@ -224,7 +236,7 @@
       },
       "T22": {
         "status": "PASS",
-        "evidence": "73x 1024x1024 imported & exported 1536x2288; LRU cache stayed at 63.2/64.0 Mi px (56 evictions)"
+        "evidence": "73x 1024x1024 imported & exported 1536x2288; LRU cache stayed at 63.2/64.0 Mi px (55 evictions)"
       },
       "T23": {
         "status": "PASS",
@@ -265,6 +277,18 @@
       "R5": {
         "status": "PASS",
         "evidence": "600 MiB fake .ssb rejected before arrayBuffer() and before dirty-discard prompt; project untouched"
+      },
+      "R7": {
+        "status": "PASS",
+        "evidence": "Project rename preserved unapplied X=12; explicit Apply still committed the offset"
+      },
+      "R8": {
+        "status": "PASS",
+        "evidence": "Valid .ssb open blocked edits during paused decode; final guard preserved a separately introduced draft"
+      },
+      "R9": {
+        "status": "PASS",
+        "evidence": "Dropping a single File after Apply imported to the second slot and preserved the first frame's committed offset"
       }
     },
     "network_requests": [],

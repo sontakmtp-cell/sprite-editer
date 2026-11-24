@@ -300,6 +300,7 @@ export class SpriteSheetBuilderApp {
   // DRAFT & DIRTY GUARDS (Spec §3.4, §10.2)
   // =========================================================================
   async ensureDraftResolved() {
+    this.editorView.finishActiveInteraction?.();
     if (!this.editorView.hasUnsavedDraft()) return true;
     const pos = parseCellKey(this.editorView.cellKey);
     const lbl = pos ? `${pos.row + 1}, ${pos.col + 1}` : this.editorView.cellKey;
@@ -559,8 +560,10 @@ export class SpriteSheetBuilderApp {
             className: 'btn-xs',
             text: 'Vùng',
             title: 'Chỉnh vùng cắt thủ công của asset này',
-            onClick: (e) => {
+            onClick: async (e) => {
               e.stopPropagation();
+              const ok = await this.ensureDraftResolved();
+              if (!ok) return;
               this.modals.openManualRegionModal(asset.id);
             }
           }),
@@ -1725,6 +1728,9 @@ export class SpriteSheetBuilderApp {
           this.editorView.pickingAnchor = false;
           $('btn-ed-pick-anchor')?.setAttribute('aria-pressed', 'false');
           $('editor-canvas')?.classList.remove('is-picking-anchor');
+        }
+        if (this.editorView.toolMode && this.editorView.toolMode !== 'move') {
+          this.editorView.setToolMode('move');
         }
         return;
       }

@@ -761,12 +761,12 @@ export class ModalsController {
       return;
     }
 
-    // Ensure alpha analysis is pre-populated for all filled cells
+    // Ensure alpha analysis is pre-populated for all filled cells (mask-aware)
     for (const k of filledKeys) {
       const c = project.cells[k];
       const a = this.app.store.getAsset(c.assetId);
       const s = a ? this.app.store.getSource(a.sourceId) : null;
-      if (a && s) await this.app.assetManager.analyzeAssetPixels(a, s, c.alphaThreshold);
+      if (a && s) await this.app.assetManager.analyzeCellPixels(a, s, c.alphaThreshold, c.mask);
     }
 
     const dlg = $('dialog-sync');
@@ -823,9 +823,9 @@ export class ModalsController {
         anchorAxis: state.anchorAxis,
         customTargetPx: { x: state.customX, y: state.customY },
         activeGuidesNormalized: project.settings.guides,
-        getAlphaBounds: (aid, thr) => {
+        getAlphaBounds: (aid, thr, cell) => {
           const asset = this.app.store.getAsset(aid);
-          return asset ? (this.app.assetManager.getCachedPixelAnalysis(asset, thr)?.alphaBounds || null) : null;
+          return asset ? (this.app.assetManager.getCachedCellPixelAnalysis(asset, thr, cell?.mask)?.alphaBounds || null) : null;
         },
         skipInvalidConfirmed: state.skipInvalidConfirmed
       });
@@ -1131,29 +1131,30 @@ export class ModalsController {
   // =========================================================================
   async computePreflightReport(exportConfig = { type: 'atlas', format: 'image/png' }) {
     const project = this.app.store.project;
-    // Analyze all filled cells on demand
+    // Analyze all filled cells on demand (keyed per cell so per-cell masks stay isolated)
     const analysisMap = new Map();
     for (const key of Object.keys(project.cells)) {
       const cell = project.cells[key];
       const asset = this.app.store.getAsset(cell.assetId);
       const source = asset ? this.app.store.getSource(asset.sourceId) : null;
       if (asset && source) {
-        const res = await this.app.assetManager.analyzeAssetPixels(asset, source, cell.alphaThreshold);
-        analysisMap.set(`${asset.id}:${cell.alphaThreshold}`, res);
+        const res = await this.app.assetManager.analyzeCellPixels(asset, source, cell.alphaThreshold, cell.mask);
+        analysisMap.set(key, res);
       }
     }
 
     const report = runPreflight({
       project,
       exportConfig,
-      inspectAssetPixels: (assetId, threshold) => {
-        const found = analysisMap.get(`${assetId}:${threshold}`);
-        if (found) return found;
+      inspectAssetPixels: (assetId, threshold, cell, cellKeyStr) => {
+        if (cellKeyStr && analysisMap.has(cellKeyStr)) {
+          return analysisMap.get(cellKeyStr);
+        }
         const asset = this.app.store.getAsset(assetId);
         if (!asset || !this.app.assetManager.hasSourceBinary(asset.sourceId)) {
           return { ok: false, missingSource: true };
         }
-        return { ok: true };
+        return this.app.assetManager.getCachedCellPixelAnalysis(asset, threshold, cell?.mask) || { ok: true };
       }
     });
 

@@ -17,6 +17,7 @@ import {
   mimeToExt
 } from '../core/constants.js';
 import { computeCellGeometry } from '../core/geometry.js';
+import { hasCellMask } from '../core/mask.js';
 import { verifyEncodedSignature } from '../core/image-inspect.js';
 import { getFrameDurationMs } from '../core/animation-clock.js';
 import { drawCellOnContext } from './renderer.js';
@@ -107,7 +108,7 @@ export async function encodeCanvasStrict(canvas, mime = 'image/png', quality = 0
 }
 
 /**
- * Resolve cell drawable + alphaBounds asynchronously for rendering.
+ * Resolve cell drawable + alphaBounds asynchronously for rendering (mask-aware).
  */
 async function resolveCellForRender(project, assetManager, cell) {
   const asset = project.assets.find((a) => a.id === cell.assetId);
@@ -115,20 +116,25 @@ async function resolveCellForRender(project, assetManager, cell) {
   const source = project.sources.find((s) => s.id === asset.sourceId);
   if (!source) throw new Error(`Thiếu nguồn ${asset.sourceId}`);
 
+  const cellHasMask = hasCellMask(cell);
   let alphaBounds = null;
-  if (cell.fitMode === 'alpha' || cell.anchor?.mode === 'alpha-bottom-center') {
-    const info = await assetManager.analyzeAssetPixels(asset, source, cell.alphaThreshold);
+  if (cell.fitMode === 'alpha' || cell.anchor?.mode === 'alpha-bottom-center' || cellHasMask) {
+    const info = await assetManager.analyzeCellPixels(asset, source, cell.alphaThreshold, cell.mask);
     if (!info.ok) throw new Error(info.decodeError || 'Không phân tích được alpha của ảnh nguồn.');
     alphaBounds = info.alphaBounds;
+    if (cellHasMask && (info.allTransparent || (cell.fitMode === 'alpha' && !alphaBounds))) {
+      // Erased-empty cell exports cleanly as transparent without blocking the atlas
+      return { asset, source, alphaBounds: null, drawable: null, skipTransparent: true };
+    }
     if (cell.fitMode === 'alpha' && !alphaBounds) {
       throw new Error(`Không có alpha bounds hợp lệ cho Fit Alpha ở asset "${asset.name}".`);
     }
   }
 
-  const drawable = await assetManager.getAssetDrawable(asset, source);
+  const drawable = await assetManager.getCellDrawable(asset, source, cell.mask);
   if (!drawable) throw new Error(`Không giải mã được nguồn "${source.name}".`);
 
-  return { asset, source, alphaBounds, drawable };
+  return { asset, source, alphaBounds, drawable, skipTransparent: false };
 }
 
 /**
@@ -151,18 +157,19 @@ export async function renderAtlasToCanvas(project, assetManager, { signal = null
       if (!pos) continue;
       const cell = project.cells[key];
       const resolved = await resolveCellForRender(project, assetManager, cell);
-
-      drawCellOnContext(ctx, {
-        cellWidth,
-        cellHeight,
-        originX: pos.col * cellWidth,
-        originY: pos.row * cellHeight,
-        region: resolved.asset.region,
-        transform: cell,
-        alphaBounds: resolved.alphaBounds,
-        drawable: resolved.drawable,
-        smoothing: project.settings.smoothing
-      });
+      if (!resolved.skipTransparent) {
+        drawCellOnContext(ctx, {
+          cellWidth,
+          cellHeight,
+          originX: pos.col * cellWidth,
+          originY: pos.row * cellHeight,
+          region: resolved.asset.region,
+          transform: cell,
+          alphaBounds: resolved.alphaBounds,
+          drawable: resolved.drawable,
+          smoothing: project.settings.smoothing
+        });
+      }
 
       if (onProgress) onProgress(i + 1, total, `Đang render ô ${i + 1}/${filledKeys.length}...`);
     }
@@ -199,20 +206,22 @@ export async function renderStripToCanvas(project, assetManager, animation, dire
       if (!cell) continue; // Keep empty slot transparent
 
       const resolved = await resolveCellForRender(project, assetManager, cell);
-      const ox = direction === 'horizontal' ? i * cellWidth : 0;
-      const oy = direction === 'vertical' ? i * cellHeight : 0;
+      if (!resolved.skipTransparent) {
+        const ox = direction === 'horizontal' ? i * cellWidth : 0;
+        const oy = direction === 'vertical' ? i * cellHeight : 0;
 
-      drawCellOnContext(ctx, {
-        cellWidth,
-        cellHeight,
-        originX: ox,
-        originY: oy,
-        region: resolved.asset.region,
-        transform: cell,
-        alphaBounds: resolved.alphaBounds,
-        drawable: resolved.drawable,
-        smoothing: project.settings.smoothing
-      });
+        drawCellOnContext(ctx, {
+          cellWidth,
+          cellHeight,
+          originX: ox,
+          originY: oy,
+          region: resolved.asset.region,
+          transform: cell,
+          alphaBounds: resolved.alphaBounds,
+          drawable: resolved.drawable,
+          smoothing: project.settings.smoothing
+        });
+      }
     }
     return canvas;
   } catch (err) {
@@ -231,17 +240,19 @@ export async function renderSingleCellToCanvas(project, assetManager, row, col) 
     const cell = project.cells[cellKey(row, col)];
     if (cell) {
       const resolved = await resolveCellForRender(project, assetManager, cell);
-      drawCellOnContext(ctx, {
-        cellWidth,
-        cellHeight,
-        originX: 0,
-        originY: 0,
-        region: resolved.asset.region,
-        transform: cell,
-        alphaBounds: resolved.alphaBounds,
-        drawable: resolved.drawable,
-        smoothing: project.settings.smoothing
-      });
+      if (!resolved.skipTransparent) {
+        drawCellOnContext(ctx, {
+          cellWidth,
+          cellHeight,
+          originX: 0,
+          originY: 0,
+          region: resolved.asset.region,
+          transform: cell,
+          alphaBounds: resolved.alphaBounds,
+          drawable: resolved.drawable,
+          smoothing: project.settings.smoothing
+        });
+      }
     }
     return canvas;
   } catch (err) {
@@ -276,27 +287,40 @@ export async function buildAtlasMetadataV1(project, assetManager, { imageFilenam
         const asset = project.assets.find((a) => a.id === cell.assetId);
         const source = asset ? project.sources.find((s) => s.id === asset.sourceId) : null;
         if (asset && source) {
-          let alphaBounds = null;
-          if (cell.fitMode === 'alpha' || cell.anchor?.mode === 'alpha-bottom-center') {
-            const info = await assetManager.analyzeAssetPixels(asset, source, cell.alphaThreshold);
-            alphaBounds = info?.alphaBounds || null;
-          }
-          const geom = computeCellGeometry({
-            cellWidth,
-            cellHeight,
-            row: r,
-            col: c,
-            region: asset.region,
-            transform: cell,
-            alphaBounds
-          });
-          if (geom && Number.isFinite(geom.anchorOutX) && Number.isFinite(geom.anchorOutY)) {
-            frameObj.anchorCellPx = {
-              x: geom.anchorOutX,
-              y: geom.anchorOutY
-            };
-          } else {
+          const info = await assetManager.analyzeCellPixels(asset, source, cell.alphaThreshold, cell.mask);
+          const alphaBounds = info?.alphaBounds || null;
+          const erasedEmpty = hasCellMask(cell) && (info?.allTransparent || (cell.fitMode === 'alpha' && !alphaBounds));
+          if (erasedEmpty) {
             frameObj.anchorCellPx = null;
+            frameObj.contentBoundsCellPx = null;
+          } else {
+            const geom = computeCellGeometry({
+              cellWidth,
+              cellHeight,
+              row: r,
+              col: c,
+              region: asset.region,
+              transform: cell,
+              alphaBounds
+            });
+            if (geom && Number.isFinite(geom.anchorOutX) && Number.isFinite(geom.anchorOutY)) {
+              frameObj.anchorCellPx = {
+                x: geom.anchorOutX,
+                y: geom.anchorOutY
+              };
+            } else {
+              frameObj.anchorCellPx = null;
+            }
+            if (geom?.renderedAlphaRect) {
+              frameObj.contentBoundsCellPx = {
+                x: geom.renderedAlphaRect.x,
+                y: geom.renderedAlphaRect.y,
+                w: geom.renderedAlphaRect.w,
+                h: geom.renderedAlphaRect.h
+              };
+            } else {
+              frameObj.contentBoundsCellPx = null;
+            }
           }
         }
       }

@@ -3,9 +3,16 @@
  * Format: ZIP archive with `manifest.json` at root and `sources/<id>.<ext>` raw image binaries.
  */
 
-import { LIMITS, mimeToExt, deepClone } from '../core/constants.js';
+import {
+  LIMITS,
+  PROJECT_SCHEMA_VERSION,
+  PROJECT_SCHEMA_VERSION_V3,
+  mimeToExt,
+  deepClone
+} from '../core/constants.js';
 import { inspectImageBytes } from '../core/image-inspect.js';
-import { validateProjectManifestV2 } from '../core/validator.js';
+import { normalizeCellMask, projectHasMasks } from '../core/mask.js';
+import { validateProjectManifest } from '../core/validator.js';
 import { createZip, readZip } from './zip.js';
 
 const SOURCE_ENTRY_RE = /^sources\/([A-Za-z0-9_-]+)\.(png|webp|jpg|jpeg)$/;
@@ -24,8 +31,20 @@ export async function serializeProjectToSsb(project, getSourceBytes, onProgress 
   for (const src of manifest.sources) {
     src.path = `sources/${src.id}.${mimeToExt(src.mime)}`;
   }
+  // Normalize empty masks and select exact schema version (V3 if any cell has mask, V2 otherwise)
+  if (manifest.cells && typeof manifest.cells === 'object') {
+    for (const key of Object.keys(manifest.cells)) {
+      const cell = manifest.cells[key];
+      const norm = normalizeCellMask(cell?.mask);
+      if (norm) cell.mask = norm;
+      else if (cell) delete cell.mask;
+    }
+  }
+  manifest.schemaVersion = projectHasMasks(manifest)
+    ? PROJECT_SCHEMA_VERSION_V3
+    : PROJECT_SCHEMA_VERSION;
 
-  const val = validateProjectManifestV2(manifest);
+  const val = validateProjectManifest(manifest);
   if (!val.ok) {
     throw new Error(`Manifest không hợp lệ khi lưu: ${val.errors[0]}`);
   }
@@ -105,7 +124,7 @@ export async function deserializeProjectFromSsb(archiveBytes, onProgress = null)
     return { ok: false, errors: ['File manifest.json không phải JSON UTF-8 hợp lệ.'] };
   }
 
-  const val = validateProjectManifestV2(parsed);
+  const val = validateProjectManifest(parsed);
   if (!val.ok) {
     return { ok: false, errors: val.errors };
   }

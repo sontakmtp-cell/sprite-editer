@@ -185,23 +185,30 @@ export class AnimationView {
       const asset = this.app.store.getAsset(cell.assetId);
       const source = asset ? this.app.store.getSource(asset.sourceId) : null;
       if (asset && source) {
-        const drawable = this.app.assetManager.getAssetDrawableSync(asset, source);
+        const drawable = this.app.assetManager.getCellDrawableSync(asset, source, cell.mask);
         const analysis = cell.fitMode === 'alpha'
-          ? this.app.assetManager.getCachedPixelAnalysis(asset, cell.alphaThreshold)
+          ? this.app.assetManager.getCachedCellPixelAnalysis(asset, cell.alphaThreshold, cell.mask)
           : null;
-        if (drawable) {
-          drawCellOnContext(ctx, {
-            cellWidth,
-            cellHeight,
-            region: asset.region,
-            transform: cell,
-            alphaBounds: analysis?.alphaBounds || null,
-            drawable,
-            smoothing: project.settings.smoothing
-          });
+        if (drawable && (cell.fitMode !== 'alpha' || analysis)) {
+          if (!(cell.fitMode === 'alpha' && !analysis?.alphaBounds)) {
+            drawCellOnContext(ctx, {
+              cellWidth,
+              cellHeight,
+              region: asset.region,
+              transform: cell,
+              alphaBounds: analysis?.alphaBounds || null,
+              drawable,
+              smoothing: project.settings.smoothing
+            });
+          }
         } else {
           const projId = project.projectId;
-          this.app.assetManager.getAssetDrawable(asset, source).then(() => {
+          Promise.all([
+            this.app.assetManager.getCellDrawable(asset, source, cell.mask),
+            cell.fitMode === 'alpha'
+              ? this.app.assetManager.analyzeCellPixels(asset, source, cell.alphaThreshold, cell.mask)
+              : Promise.resolve(null)
+          ]).then(() => {
             if (this.app.store.project.projectId === projId) this.renderCurrentFrame();
           }).catch(() => {});
         }
@@ -259,23 +266,35 @@ export class AnimationView {
             tctx.save();
             tctx.translate(ox, oy);
             tctx.scale(s, s);
-            const anal = cell.fitMode === 'alpha' ? this.app.assetManager.getCachedPixelAnalysis(asset, cell.alphaThreshold) : null;
-            drawCellOnContext(tctx, {
-              cellWidth,
-              cellHeight,
-              region: asset.region,
-              transform: cell,
-              alphaBounds: anal?.alphaBounds || null,
-              drawable,
-              smoothing: project.settings.smoothing
-            });
+            const anal = cell.fitMode === 'alpha'
+              ? this.app.assetManager.getCachedCellPixelAnalysis(asset, cell.alphaThreshold, cell.mask)
+              : null;
+            if (!(cell.fitMode === 'alpha' && !anal?.alphaBounds)) {
+              drawCellOnContext(tctx, {
+                cellWidth,
+                cellHeight,
+                region: asset.region,
+                transform: cell,
+                alphaBounds: anal?.alphaBounds || null,
+                drawable,
+                smoothing: project.settings.smoothing
+              });
+            }
             tctx.restore();
           };
-          const syncDraw = this.app.assetManager.getAssetDrawableSync(asset, source);
-          if (syncDraw) drawThumb(syncDraw);
+          const syncDraw = this.app.assetManager.getCellDrawableSync(asset, source, cell.mask);
+          const syncAnal = cell.fitMode === 'alpha'
+            ? this.app.assetManager.getCachedCellPixelAnalysis(asset, cell.alphaThreshold, cell.mask)
+            : true;
+          if (syncDraw && syncAnal) drawThumb(syncDraw);
           else {
             const projId = project.projectId;
-            this.app.assetManager.getAssetDrawable(asset, source).then((d) => {
+            Promise.all([
+              this.app.assetManager.getCellDrawable(asset, source, cell.mask),
+              cell.fitMode === 'alpha'
+                ? this.app.assetManager.analyzeCellPixels(asset, source, cell.alphaThreshold, cell.mask)
+                : Promise.resolve(null)
+            ]).then(([d]) => {
               if (d && this.app.store.project.projectId === projId) drawThumb(d);
             }).catch(() => {});
           }

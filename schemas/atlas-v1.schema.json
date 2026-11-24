@@ -56,6 +56,17 @@
               "x": { "type": "number" },
               "y": { "type": "number" }
             }
+          },
+          "contentBoundsCellPx": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["x", "y", "w", "h"],
+            "properties": {
+              "x": { "type": "number" },
+              "y": { "type": "number" },
+              "w": { "type": "number", "minimum": 0 },
+              "h": { "type": "number", "minimum": 0 }
+            }
           }
         }
       }

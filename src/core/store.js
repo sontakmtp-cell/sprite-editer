@@ -21,6 +21,7 @@ import {
   mimeToExt
 } from './constants.js';
 import { scaleOffsetsForCellResize } from './geometry.js';
+import { normalizeCellMask } from './mask.js';
 import { validateGrid } from './validator.js';
 
 export function createDefaultCell(assetId, defaultAlphaThreshold = 8) {
@@ -659,7 +660,11 @@ export class ProjectStore {
       if (!isCellInGrid(row, col, p.grid)) return false;
       const asset = p.assets.find((a) => a.id === cellData?.assetId);
       if (!asset || !p.sources.some((s) => s.id === asset.sourceId)) return false;
-      p.cells[key] = deepClone(cellData);
+      const clean = deepClone(cellData);
+      const normMask = normalizeCellMask(clean.mask);
+      if (normMask) clean.mask = normMask;
+      else delete clean.mask;
+      p.cells[key] = clean;
     });
   }
 
@@ -669,7 +674,11 @@ export class ProjectStore {
       for (const [key, cellData] of Object.entries(updatesMap)) {
         const pos = parseCellKey(key);
         if (!pos || !isCellInGrid(pos.row, pos.col, p.grid)) continue;
-        p.cells[key] = deepClone(cellData);
+        const clean = deepClone(cellData);
+        const normMask = normalizeCellMask(clean.mask);
+        if (normMask) clean.mask = normMask;
+        else delete clean.mask;
+        p.cells[key] = clean;
         count++;
       }
       if (count === 0) return false;
@@ -744,7 +753,11 @@ export class ProjectStore {
         if (!asset || !assetSet.has(asset.id) || !sourceSet.has(asset.sourceId)) {
           return false;
         }
-        p.cells[cellKey(item.row, item.col)] = deepClone(item.cell);
+        const clean = deepClone(item.cell);
+        const normMask = normalizeCellMask(clean.mask);
+        if (normMask) clean.mask = normMask;
+        else delete clean.mask;
+        p.cells[cellKey(item.row, item.col)] = clean;
         count++;
       }
       if (count === 0) return false;

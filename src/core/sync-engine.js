@@ -56,7 +56,7 @@ export function planTransformSync({
     return { ok: false, fatalError: 'Asset của ô tham chiếu không tồn tại.', items: [], updates: {} };
   }
 
-  const refAlpha = getAlphaBounds(refAsset.id, refCell.alphaThreshold);
+  const refAlpha = getAlphaBounds(refAsset.id, refCell.alphaThreshold, refCell, referenceKey);
   const refGeom = computeCellGeometry({
     cellWidth,
     cellHeight,
@@ -133,7 +133,7 @@ export function planTransformSync({
 
     const nextCell = deepClone(cell);
     const warnings = [];
-    const targetAlpha = getAlphaBounds(asset.id, nextCell.alphaThreshold);
+    const targetAlpha = getAlphaBounds(asset.id, nextCell.alphaThreshold, nextCell, key);
 
     if (mode === 'copy-transform') {
       if (copyFields === 'all') {
@@ -149,7 +149,7 @@ export function planTransformSync({
         nextCell.offsetY = refCell.offsetY;
       }
 
-      const checkAlpha = getAlphaBounds(asset.id, nextCell.alphaThreshold);
+      const checkAlpha = getAlphaBounds(asset.id, nextCell.alphaThreshold, nextCell, key);
       if (nextCell.fitMode === 'alpha' && !checkAlpha) {
         errorCount++;
         items.push({ key, pos, status: 'error', error: 'Không có alpha bounds hợp lệ cho Fit Alpha.' });
