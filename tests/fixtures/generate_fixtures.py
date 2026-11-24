@@ -228,6 +228,24 @@ def make_t17_bad_archives():
         zf.writestr("sources/s1.png", png_bytes)
 
 
+def make_eraser_12frame_fixture():
+    # E01 & E05: 12-frame horizontal strip (768x64 = 12 frames of 64x64, 0 margin/gap).
+    # Each frame has a distinct body at local x=14..45, y=14..51 (32x38).
+    # Frame 1 (col 0) ALSO has an unwanted artifact speck from Frame 2 placed INSIDE Frame 1's crop
+    # at local x=54..61, y=24..37 (extends Frame 1 alpha bounds horizontally to x=14..61, w=48).
+    img = Image.new("RGBA", (12 * 64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    frame_colors = []
+    for i in range(12):
+        col = (40 + i * 18, 220 - i * 14, 80 + ((i * 29) % 140), 255)
+        frame_colors.append(col)
+        ox = i * 64
+        draw.rectangle([ox + 14, 14, ox + 45, 51], fill=col)
+    # Place Frame 2's color speck inside Frame 1's crop (local x=54..61, y=24..37)
+    draw.rectangle([54, 24, 61, 37], fill=frame_colors[1])
+    save_png(img, GEN / "e01_strip_12frames_768x64.png")
+
+
 def main():
     make_t02_rect()
     make_t04_bleed_strip()
@@ -239,6 +257,7 @@ def main():
     make_t10_batch_natural()
     make_hatch_73_fixtures()
     make_t17_bad_archives()
+    make_eraser_12frame_fixture()
     total_hd = sum(p.stat().st_size for p in (GEN / "hatch_73_1024").glob("*.png"))
     print(f"Fixtures generated in {GEN} (73x 1024x1024 total = {total_hd / (1024*1024):.2f} MiB)")
 

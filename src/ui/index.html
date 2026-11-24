@@ -182,6 +182,38 @@
               <!-- Warnings inside Editor -->
               <div id="editor-warnings" class="alert-box is-warn hidden"></div>
 
+              <!-- Edit / Eraser / Restore Mode & Brush Controls -->
+              <div class="editor-section" id="editor-brush-section">
+                <div class="editor-section-title">
+                  <span>Chế độ Sửa &amp; Tẩy</span>
+                  <span id="ed-mask-status" class="badge">Chưa tẩy</span>
+                </div>
+                <div id="ed-tool-toolbar" class="editor-tool-bar" role="toolbar" focusgroup="toolbar wrap" aria-label="Chế độ sửa ô" aria-controls="editor-canvas">
+                  <div class="editor-tool-group" role="group" aria-label="Công cụ chỉnh sửa">
+                    <button id="btn-ed-tool-move" type="button" class="btn-xs btn-toggle" aria-pressed="true" title="Di chuyển ảnh trong ô (mặc định)">Di chuyển</button>
+                    <button id="btn-ed-tool-erase" type="button" class="btn-xs btn-toggle" aria-pressed="false" title="Tẩy phần thừa thành trong suốt (cọ tròn cứng)">Tẩy</button>
+                    <button id="btn-ed-tool-restore" type="button" class="btn-xs btn-toggle" aria-pressed="false" title="Khôi phục đúng alpha gốc ở vùng quét">Khôi phục</button>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label for="ed-brush-size-num">Cỡ cọ (px nguồn):</label>
+                  <input id="ed-brush-size-range" type="range" min="1" max="128" step="1" value="12" style="flex:1;min-width:70px;" aria-label="Thanh trượt cỡ cọ">
+                  <input id="ed-brush-size-num" type="number" min="1" max="128" step="1" value="12" style="width:58px;">
+                </div>
+                <div class="form-row">
+                  <label for="ed-view-zoom">Zoom xem:</label>
+                  <select id="ed-view-zoom" style="width:82px;" title="Phóng đại khung xem trước (không đổi pixel xuất)">
+                    <option value="fit">Vừa (Fit)</option>
+                    <option value="1">100%</option>
+                    <option value="1.5">150%</option>
+                    <option value="2">200%</option>
+                    <option value="3">300%</option>
+                    <option value="4">400%</option>
+                  </select>
+                  <button id="btn-ed-mask-clear" type="button" class="btn-xs btn-danger" disabled style="margin-left:auto;" title="Xóa toàn bộ vết tẩy/khôi phục trong ô đang chọn">Bỏ toàn bộ vết tẩy</button>
+                </div>
+              </div>
+
               <!-- Source Info -->
               <div class="editor-section">
                 <div class="editor-section-title">

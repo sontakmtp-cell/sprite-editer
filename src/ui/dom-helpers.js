@@ -61,6 +61,9 @@ export function showToast(message, type = 'info', durationMs = 4200) {
     if (toast.parentNode) toast.remove();
   };
   closeBtn.addEventListener('click', remove);
+  while (container.children.length >= 3) {
+    container.firstElementChild.remove();
+  }
   container.appendChild(toast);
   if (durationMs > 0) {
     setTimeout(remove, durationMs);

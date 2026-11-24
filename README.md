@@ -48,6 +48,18 @@
 - **Tham chiếu & Onion Skin:** Ghim một ô bất kỳ (hoặc bấm `← Trước` / `Sau →` trong nhóm) làm frame tham chiếu, bật **Onion Skin** (độ mờ 10–90%) hoặc bấm **Cạnh nhau** để so sánh trực tiếp. Overlay không bao giờ bị xuất vào ảnh.
 - **Đồng bộ căn chỉnh (`Đồng bộ...`):** 4 chế độ tách biệt — *(1) Sao chép transform*, *(2) Đồng bộ tỷ lệ hiển thị theo chiều cao/rộng alpha*, *(3) Đồng bộ vị trí anchor*, và *(2+3) Kết hợp*. Không tự clamp nếu zoom vượt `25–1000%`; báo rõ ô lỗi và yêu cầu xác nhận nếu muốn bỏ qua.
 
+### 3.3.1. Tẩy phần thừa theo từng ô (Di chuyển / Tẩy / Khôi phục)
+- Chọn một ô có ảnh trên lưới → trong panel **Chỉnh sửa frame**, chọn chế độ trong thanh công cụ **Chế độ Sửa & Tẩy**:
+  - **Di chuyển** *(mặc định)*: kéo chuột để dịch chuyển vị trí nhân vật trong ô.
+  - **Tẩy**: cọ tròn cứng cỡ **1–128 px ảnh nguồn** (mặc định `12 px`) làm trong suốt phần thừa dính từ frame bên cạnh. Kéo cọ không làm xê dịch vị trí ảnh; click 1 điểm hoặc kéo nhanh đều tạo nét liền.
+  - **Khôi phục**: khôi phục **đúng alpha gốc** (0 / 128 / 255) tại vùng quét mà không sơn trắng hay làm đục nền trong suốt.
+  - **Zoom xem** (`Vừa`, `100%`–`400%`): phóng đại khung xem trước để tẩy chi tiết nhỏ (không thay đổi pixel xuất).
+  - **Bỏ toàn bộ vết tẩy**: xóa sạch mặt nạ của ô đang chọn (nằm trong bản nháp, có thể Hoàn nháp / Hủy trước khi Áp dụng).
+- **Bảo toàn dữ liệu & phạm vi:** Mặt nạ lưu theo **từng ô** trong tọa độ pixel ảnh nguồn đã xoay EXIF — không sửa byte ảnh nguồn gốc và không ảnh hưởng các ô khác dùng chung cùng asset. Khi tẩy sát mép ảnh, tâm cọ bám đúng vị trí con trỏ (chỉ clip phần giao ra ngoài crop, không kéo tâm cọ vào trong); cọ `1 px` bám cố định đúng pixel nguồn kể cả khi mở rộng crop; và các thao tác Dán/Nhân bản/Ctrl-kéo luôn kiểm tra ngân sách mặt nạ toàn project trước khi commit.
+- **Tương thích Fit Alpha & Xuất:** Sau khi kết thúc nét vẽ, Fit Alpha, anchor theo alpha, preflight và toàn bộ đầu ra (Atlas/Strip/Frame/ZIP/JSON metadata) tự dùng dữ liệu sau tẩy. JSON Metadata mặc định giữ chuẩn **Atlas V1** tương thích ngược hoàn toàn; có tùy chọn bật **Atlas Metadata V2** để xuất kèm `contentBoundsCellPx` thực tế sau clip và tẩy. Nếu tẩy sạch toàn bộ phần nhìn thấy trong ô, preflight hiển thị cảnh báo (không chặn xuất cả atlas), ô đó xuất trong suốt và vẫn có thể **Khôi phục** hoặc **Bỏ toàn bộ vết tẩy**.
+- **Quy tắc sao chép:** Di chuyển / Hoán đổi / Sao chép cả ô mang vết tẩy theo; **Dán căn chỉnh** không dán vết tẩy; **Thay ảnh khác** bắt đầu không có vết tẩy.
+- **Tương thích file `.ssb`:** Project không có vết tẩy tiếp tục lưu `schemaVersion: 2`. Project có ít nhất một ô chứa vết tẩy sẽ lưu `schemaVersion: 3` (xem `PROJECT-FORMAT.md`). File V3 có vết tẩy **không mở được trên bản V2.0 cũ**; bản mới vẫn mở bình thường mọi file `.ssb` V2 cũ.
+
 ### 3.4. Xem thử Animation & Timeline
 - Tạo nhóm mới, tạo nhanh **Từ hàng** hoặc **Từ vùng chọn**, nhân bản, đổi tên, override đường gióng và ngưỡng cảnh báo chênh lệch kích thước (mặc định 20% so với trung vị nhóm).
 - Kéo thả các thumbnail trên timeline để đổi thứ tự phát (không làm di chuyển nội dung trên lưới atlas). Nhập `durationMs` riêng (`10–10000 ms`) cho từng slot hoặc để trống để dùng FPS (`1–60`, mặc định `8`).
@@ -80,7 +92,7 @@
 | `Space + Kéo chuột` | Pan vùng hiển thị lưới Sprite Atlas |
 | `Ctrl + Cuộn chuột` | Zoom vùng hiển thị lưới Sprite Atlas (`25–400%`) |
 | `Ctrl + Click` / `Shift + Click` | Chọn thêm/bỏ chọn ô / Chọn vùng chữ nhật |
-| `Escape` | Đóng menu ngữ cảnh / thoát chế độ chọn điểm anchor |
+| `Escape` | Đóng menu ngữ cảnh / thoát chế độ chọn điểm anchor / quay về chế độ Di chuyển |
 
 *(Phím tắt tự động không can thiệp khi con trỏ đang nhập liệu trong ô text/số/textarea.)*
 
@@ -94,6 +106,7 @@
 - **Animation:** tối đa `256` nhóm, tổng `≤ 16.384` slot.
 - **Cache bitmap giải mã:** tối đa `64 Mi pixel` (~256 MiB RGBA) thu hồi tự động theo LRU (`ImageBitmap.close()`).
 - **Archive `.ssb` / ZIP xuất:** tối đa `512 MiB` nén & giải nén; `manifest.json` tối đa `8 MiB`.
+- **Mặt nạ tẩy theo ô (V3):** cọ `1–128 px` nguồn (`radius 0.5–64`), tối đa `1024` điểm/nét, `512` nét/ô, `16.384` điểm/ô, `8.192` nét và `131.072` điểm toàn project, tổng dung lượng JSON mặt nạ `≤ 2 MiB`.
 
 ---
 
@@ -111,10 +124,13 @@ npm run test:unit
 # 3. Tạo bộ fixture tổng hợp độc lập trong tests/fixtures/generated/
 npm run test:fixtures
 
-# 4. Chạy bộ kiểm thử E2E + đọc pixel trên Chrome & Edge thực tế (T01–T27)
+# 4. Chạy bộ kiểm thử E2E + đọc pixel trên Chrome & Edge thực tế (T01–T27, R1–R9)
 npm run test:e2e
 
-# 5. Chạy đo hiệu năng thực tế (T28, >= 3 lần mỗi kịch bản trên Chrome & Edge)
+# 5. Chạy bộ kiểm thử E2E tính năng Tẩy theo từng ô trên Chrome & Edge (E01–E10, gồm DPR=2, budget paste, cọ sát mép/1px, Atlas V1/V2)
+npm run test:eraser
+
+# 6. Chạy đo hiệu năng thực tế (T28, >= 3 lần mỗi kịch bản trên Chrome & Edge)
 npm run test:perf
 ```
 

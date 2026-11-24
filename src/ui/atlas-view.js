@@ -393,23 +393,27 @@ export class AtlasView {
           const asset = project.assets.find((a) => a.id === cell.assetId);
           const source = asset ? project.sources.find((s) => s.id === asset.sourceId) : null;
           if (asset && source) {
-            const drawable = this.app.assetManager.getAssetDrawableSync(asset, source);
+            const drawable = this.app.assetManager.getCellDrawableSync(asset, source, cell.mask);
             if (drawable) {
               const alphaInfo =
                 cell.fitMode === 'alpha'
-                  ? this.app.assetManager.getCachedPixelAnalysis(asset, cell.alphaThreshold)
+                  ? this.app.assetManager.getCachedCellPixelAnalysis(asset, cell.alphaThreshold, cell.mask)
                   : null;
-              drawCellOnContext(ctx, {
-                cellWidth,
-                cellHeight,
-                originX: ox,
-                originY: oy,
-                region: asset.region,
-                transform: cell,
-                alphaBounds: alphaInfo?.alphaBounds || null,
-                drawable,
-                smoothing: project.settings.smoothing
-              });
+              if (cell.fitMode === 'alpha' && !alphaInfo) {
+                needDecodeAssets.push({ asset, source, cell });
+              } else if (!(cell.fitMode === 'alpha' && !alphaInfo?.alphaBounds)) {
+                drawCellOnContext(ctx, {
+                  cellWidth,
+                  cellHeight,
+                  originX: ox,
+                  originY: oy,
+                  region: asset.region,
+                  transform: cell,
+                  alphaBounds: alphaInfo?.alphaBounds || null,
+                  drawable,
+                  smoothing: project.settings.smoothing
+                });
+              }
             } else {
               needDecodeAssets.push({ asset, source, cell });
               // Subtle loading placeholder
@@ -527,13 +531,13 @@ export class AtlasView {
     if (needDecodeAssets.length > 0) {
       const projId = project.projectId;
       for (const item of needDecodeAssets) {
-        this.app.assetManager.getAssetDrawable(item.asset, item.source).then(() => {
+        this.app.assetManager.getCellDrawable(item.asset, item.source, item.cell.mask).then(() => {
           if (this.app.store.project.projectId === projId) {
             this.requestRender();
           }
         }).catch(() => {});
         if (item.cell.fitMode === 'alpha') {
-          this.app.assetManager.analyzeAssetPixels(item.asset, item.source, item.cell.alphaThreshold).then(() => {
+          this.app.assetManager.analyzeCellPixels(item.asset, item.source, item.cell.alphaThreshold, item.cell.mask).then(() => {
             if (this.app.store.project.projectId === projId) {
               this.requestRender();
             }

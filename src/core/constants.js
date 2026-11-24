@@ -2,11 +2,14 @@
  * Sprite Sheet Builder V2.0 — Core constants, limits, presets, and deterministic helpers.
  */
 
-export const APP_VERSION = '2.0.0';
+export const APP_VERSION = '2.1.0';
 export const PROJECT_FORMAT = 'sprite-sheet-builder-project';
 export const PROJECT_SCHEMA_VERSION = 2;
+export const PROJECT_SCHEMA_VERSION_V3 = 3;
+export const SUPPORTED_PROJECT_SCHEMA_VERSIONS = Object.freeze([2, 3]);
 export const ATLAS_FORMAT = 'sprite-sheet-builder-atlas';
 export const ATLAS_SCHEMA_VERSION = 1;
+export const ATLAS_SCHEMA_VERSION_V2 = 2;
 export const PRESET_FORMAT = 'sprite-sheet-builder-preset';
 export const PRESET_SCHEMA_VERSION = 1;
 
@@ -46,7 +49,18 @@ export const LIMITS = Object.freeze({
   DEFAULT_WEBP_QUALITY: 0.92,
   DEFAULT_SIZE_VARIANCE_THRESHOLD: 0.2,
   MAX_JSON_DEPTH: 16,
-  MAX_CUSTOM_PRESETS: 64
+  MAX_CUSTOM_PRESETS: 64,
+  MIN_BRUSH_SIZE: 1,
+  MAX_BRUSH_SIZE: 128,
+  DEFAULT_BRUSH_SIZE: 12,
+  MIN_MASK_RADIUS: 0.5,
+  MAX_MASK_RADIUS: 64,
+  MAX_MASK_POINTS_PER_STROKE: 1024,
+  MAX_MASK_STROKES_PER_CELL: 512,
+  MAX_MASK_POINTS_PER_CELL: 16384,
+  MAX_PROJECT_MASK_STROKES: 8192,
+  MAX_PROJECT_MASK_POINTS: 131072,
+  MAX_PROJECT_MASK_BYTES: 2 * 1024 * 1024 // 2 MiB serialized mask JSON budget across project
 });
 
 export const DEFAULT_GRID = Object.freeze({

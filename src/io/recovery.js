@@ -4,8 +4,14 @@
  * the last valid snapshot. Gracefully reports unavailability on restricted file:// or full quota.
  */
 
-import { generateId, deepClone } from '../core/constants.js';
-import { validateProjectManifestV2 } from '../core/validator.js';
+import {
+  PROJECT_SCHEMA_VERSION,
+  PROJECT_SCHEMA_VERSION_V3,
+  generateId,
+  deepClone
+} from '../core/constants.js';
+import { normalizeCellMask, projectHasMasks } from '../core/mask.js';
+import { validateProjectManifest } from '../core/validator.js';
 
 const DB_NAME = 'sprite-sheet-builder-recovery-v2';
 const DB_VERSION = 1;
@@ -281,7 +287,18 @@ export class RecoveryManager {
 
     // Eagerly capture immutable snapshot metadata & all source bytes synchronously BEFORE awaiting IDB
     const projectCopy = deepClone(project);
-    const val = validateProjectManifestV2(projectCopy);
+    if (projectCopy.cells && typeof projectCopy.cells === 'object') {
+      for (const key of Object.keys(projectCopy.cells)) {
+        const cell = projectCopy.cells[key];
+        const norm = normalizeCellMask(cell?.mask);
+        if (norm) cell.mask = norm;
+        else if (cell) delete cell.mask;
+      }
+    }
+    projectCopy.schemaVersion = projectHasMasks(projectCopy)
+      ? PROJECT_SCHEMA_VERSION_V3
+      : PROJECT_SCHEMA_VERSION;
+    const val = validateProjectManifest(projectCopy);
     if (!val.ok) {
       return Promise.resolve({ ok: false, reason: 'invalid-manifest', error: val.errors[0] });
     }
@@ -373,7 +390,7 @@ export class RecoveryManager {
       const snap = await this._txGet(STORE_META, SNAPSHOT_KEY);
       if (!snap || snap.status !== 'committed' || !snap.project) return null;
 
-      const val = validateProjectManifestV2(snap.project);
+      const val = validateProjectManifest(snap.project);
       if (!val.ok) return null;
 
       const sourceBinaries = new Map();

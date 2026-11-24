@@ -21,6 +21,7 @@ import {
   mimeToExt
 } from './constants.js';
 import { scaleOffsetsForCellResize } from './geometry.js';
+import { normalizeCellMask, checkProjectMaskBudgets } from './mask.js';
 import { validateGrid } from './validator.js';
 
 export function createDefaultCell(assetId, defaultAlphaThreshold = 8) {
@@ -655,25 +656,49 @@ export class ProjectStore {
 
   setCellTransform(row, col, cellData, label = 'Chỉnh sửa frame') {
     const key = cellKey(row, col);
-    return this.commit(label, (p) => {
+    let budgetErr = null;
+    const res = this.commit(label, (p) => {
       if (!isCellInGrid(row, col, p.grid)) return false;
       const asset = p.assets.find((a) => a.id === cellData?.assetId);
       if (!asset || !p.sources.some((s) => s.id === asset.sourceId)) return false;
-      p.cells[key] = deepClone(cellData);
+      const clean = deepClone(cellData);
+      const normMask = normalizeCellMask(clean.mask);
+      if (normMask) clean.mask = normMask;
+      else delete clean.mask;
+      p.cells[key] = clean;
+      const budget = checkProjectMaskBudgets(p);
+      if (!budget.ok) {
+        budgetErr = budget;
+        return false;
+      }
     });
+    if (budgetErr) return { committed: false, error: budgetErr.message, code: budgetErr.code };
+    return res;
   }
 
   applyMultipleCellTransforms(updatesMap, label = 'Đồng bộ căn chỉnh') {
-    return this.commit(label, (p) => {
+    let budgetErr = null;
+    const res = this.commit(label, (p) => {
       let count = 0;
       for (const [key, cellData] of Object.entries(updatesMap)) {
         const pos = parseCellKey(key);
         if (!pos || !isCellInGrid(pos.row, pos.col, p.grid)) continue;
-        p.cells[key] = deepClone(cellData);
+        const clean = deepClone(cellData);
+        const normMask = normalizeCellMask(clean.mask);
+        if (normMask) clean.mask = normMask;
+        else delete clean.mask;
+        p.cells[key] = clean;
         count++;
       }
       if (count === 0) return false;
+      const budget = checkProjectMaskBudgets(p);
+      if (!budget.ok) {
+        budgetErr = budget;
+        return false;
+      }
     });
+    if (budgetErr) return { committed: false, error: budgetErr.message, code: budgetErr.code };
+    return res;
   }
 
   clearCells(keys) {
@@ -691,7 +716,8 @@ export class ProjectStore {
 
   moveOrSwapCell(fromKey, toKey, { copy = false } = {}) {
     if (fromKey === toKey) return { committed: false };
-    return this.commit(copy ? 'Sao chép ô' : 'Di chuyển/Hoán đổi ô', (p) => {
+    let budgetErr = null;
+    const res = this.commit(copy ? 'Sao chép ô' : 'Di chuyển/Hoán đổi ô', (p) => {
       const fromPos = parseCellKey(fromKey);
       const toPos = parseCellKey(toKey);
       if (!fromPos || !toPos || !isCellInGrid(fromPos.row, fromPos.col, p.grid) || !isCellInGrid(toPos.row, toPos.col, p.grid)) {
@@ -702,6 +728,11 @@ export class ProjectStore {
 
       if (copy) {
         p.cells[toKey] = deepClone(srcCell);
+        const budget = checkProjectMaskBudgets(p);
+        if (!budget.ok) {
+          budgetErr = budget;
+          return false;
+        }
       } else {
         const dstCell = p.cells[toKey];
         p.cells[toKey] = deepClone(srcCell);
@@ -712,6 +743,8 @@ export class ProjectStore {
         }
       }
     });
+    if (budgetErr) return { committed: false, error: budgetErr.message, code: budgetErr.code };
+    return res;
   }
 
   pasteCells(pastePlan, label = 'Dán nội dung ô') {
@@ -734,7 +767,8 @@ export class ProjectStore {
       return { committed: false, missingAssetIds };
     }
 
-    return this.commit(label, (p) => {
+    let budgetErr = null;
+    const res = this.commit(label, (p) => {
       const assetSet = new Set(p.assets.map((a) => a.id));
       const sourceSet = new Set(p.sources.map((s) => s.id));
       let count = 0;
@@ -744,11 +778,22 @@ export class ProjectStore {
         if (!asset || !assetSet.has(asset.id) || !sourceSet.has(asset.sourceId)) {
           return false;
         }
-        p.cells[cellKey(item.row, item.col)] = deepClone(item.cell);
+        const clean = deepClone(item.cell);
+        const normMask = normalizeCellMask(clean.mask);
+        if (normMask) clean.mask = normMask;
+        else delete clean.mask;
+        p.cells[cellKey(item.row, item.col)] = clean;
         count++;
       }
       if (count === 0) return false;
+      const budget = checkProjectMaskBudgets(p);
+      if (!budget.ok) {
+        budgetErr = budget;
+        return false;
+      }
     });
+    if (budgetErr) return { committed: false, missingAssetIds: [], error: budgetErr.message, code: budgetErr.code };
+    return res;
   }
 
   // --- Animation Group CRUD (Spec §9) ---

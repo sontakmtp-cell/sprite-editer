@@ -1,0 +1,98 @@
+[
+  {
+    "browser": "Chrome",
+    "results": {
+      "E01": {
+        "status": "PASS",
+        "evidence": "12-frame strip speck erased (alpha=0), body & 11 other frames exact 0-diff, WebP RIFF/WEBP transparent"
+      },
+      "E02": {
+        "status": "PASS",
+        "evidence": "Erased cell 0:0 center (alpha=0); control cell 0:7 sharing f_0 has 0 pixel diffs; source bytes untouched"
+      },
+      "E03": {
+        "status": "PASS",
+        "evidence": "DPR=2, crop=(128,0), zoom=150%->200%, offset=(12,-8)->(-10,6): click & fast drag locked to source pixels (0 gap, 0 drift)"
+      },
+      "E04": {
+        "status": "PASS",
+        "evidence": "Erase/Restore exact alpha=(0,128,255) without alpha buildup; Draft Undo, Cancel, Apply, Project Undo/Redo all verified"
+      },
+      "E05": {
+        "status": "PASS",
+        "evidence": "Speck erased -> Fit Alpha/anchor/metadata updated (w 48->32); Atlas/Strip/Frame 0-diff; erased-empty warns & exports alpha=0; Restore & Clear Mask work"
+      },
+      "E06": {
+        "status": "PASS",
+        "evidence": "V3 .ssb round-trip PNG pixel-exact; Recovery={'ok': True, 'strokes': 3}; invalid V3 rejected preserving session; V2 opens unmasked"
+      },
+      "E07": {
+        "status": "PASS",
+        "evidence": "Copy/Swap carry mask; Paste Transform preserves no-mask; Replace clears mask; Crop edit intersects in source coords; draft guard & pointercancel clean; 0 network/page errors"
+      },
+      "E08": {
+        "status": "PASS",
+        "evidence": "8500-stroke paste rejected safely; 8000-stroke paste + 117,760-pt manifest (0.87 MiB) Save/Open & Recovery PASS"
+      },
+      "E09": {
+        "status": "PASS",
+        "evidence": "Real-mouse edge click (32,8) r=10 erased ONLY rows [16,17]; 1px brush stayed locked at source x=63 after crop expand 64->80"
+      },
+      "E10": {
+        "status": "PASS",
+        "evidence": "Offset +24px in 64px cell -> PNG bbox (24,0,40,64) == JSON V2 contentBoundsCellPx; off-cell -> null; JSON V1 strictly matches base atlas-v1 schema"
+      }
+    },
+    "network_requests": [],
+    "page_errors": [],
+    "console_errors": []
+  },
+  {
+    "browser": "Edge",
+    "results": {
+      "E01": {
+        "status": "PASS",
+        "evidence": "12-frame strip speck erased (alpha=0), body & 11 other frames exact 0-diff, WebP RIFF/WEBP transparent"
+      },
+      "E02": {
+        "status": "PASS",
+        "evidence": "Erased cell 0:0 center (alpha=0); control cell 0:7 sharing f_0 has 0 pixel diffs; source bytes untouched"
+      },
+      "E03": {
+        "status": "PASS",
+        "evidence": "DPR=2, crop=(128,0), zoom=150%->200%, offset=(12,-8)->(-10,6): click & fast drag locked to source pixels (0 gap, 0 drift)"
+      },
+      "E04": {
+        "status": "PASS",
+        "evidence": "Erase/Restore exact alpha=(0,128,255) without alpha buildup; Draft Undo, Cancel, Apply, Project Undo/Redo all verified"
+      },
+      "E05": {
+        "status": "PASS",
+        "evidence": "Speck erased -> Fit Alpha/anchor/metadata updated (w 48->32); Atlas/Strip/Frame 0-diff; erased-empty warns & exports alpha=0; Restore & Clear Mask work"
+      },
+      "E06": {
+        "status": "PASS",
+        "evidence": "V3 .ssb round-trip PNG pixel-exact; Recovery={'ok': True, 'strokes': 3}; invalid V3 rejected preserving session; V2 opens unmasked"
+      },
+      "E07": {
+        "status": "PASS",
+        "evidence": "Copy/Swap carry mask; Paste Transform preserves no-mask; Replace clears mask; Crop edit intersects in source coords; draft guard & pointercancel clean; 0 network/page errors"
+      },
+      "E08": {
+        "status": "PASS",
+        "evidence": "8500-stroke paste rejected safely; 8000-stroke paste + 117,760-pt manifest (0.87 MiB) Save/Open & Recovery PASS"
+      },
+      "E09": {
+        "status": "PASS",
+        "evidence": "Real-mouse edge click (32,8) r=10 erased ONLY rows [16,17]; 1px brush stayed locked at source x=63 after crop expand 64->80"
+      },
+      "E10": {
+        "status": "PASS",
+        "evidence": "Offset +24px in 64px cell -> PNG bbox (24,0,40,64) == JSON V2 contentBoundsCellPx; off-cell -> null; JSON V1 strictly matches base atlas-v1 schema"
+      }
+    },
+    "network_requests": [],
+    "page_errors": [],
+    "console_errors": []
+  }
+]

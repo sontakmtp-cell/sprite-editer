@@ -9,8 +9,9 @@
     "test:unit": "node --test tests/unit/*.test.mjs",
     "test:fixtures": "node tests/fixtures/generate-fixtures.mjs",
     "test:e2e": "python tests/e2e/run_e2e.py",
+    "test:eraser": "python tests/e2e/run_eraser_e2e.py",
     "test:perf": "python tests/e2e/run_perf.py",
-    "test": "npm run build && npm run test:unit && npm run test:fixtures && npm run test:e2e"
+    "test": "npm run build && npm run test:unit && npm run test:fixtures && npm run test:e2e && npm run test:eraser"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -8,13 +8,21 @@ import {
   LIMITS,
   PROJECT_FORMAT,
   PROJECT_SCHEMA_VERSION,
+  PROJECT_SCHEMA_VERSION_V3,
+  SUPPORTED_PROJECT_SCHEMA_VERSIONS,
   PRESET_FORMAT,
   PRESET_SCHEMA_VERSION,
   ATLAS_FORMAT,
   ATLAS_SCHEMA_VERSION,
+  ATLAS_SCHEMA_VERSION_V2,
   parseCellKey,
   isCellInGrid
 } from './constants.js';
+import {
+  validateCellMaskStrict,
+  measureUtf8Bytes,
+  serializeManifestJsonCompact
+} from './mask.js';
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SAFE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
@@ -257,10 +265,11 @@ export function validatePresetV1(raw) {
 }
 
 /**
- * Validate full Project Manifest V2 (Spec §10.1, §10.2, §12.3).
- * Returns sanitized clean copy (no prototype chain risks) when valid.
+ * Validate full Project Manifest V2 or V3 (Spec §10.1, §10.2, §12.3; Eraser Mask V3).
+ * - Schema V2 strictly forbids `cell.mask` (preserves V2 compatibility & strictness).
+ * - Schema V3 allows and strictly validates `cell.mask` and project-wide mask budgets.
  */
-export function validateProjectManifestV2(raw) {
+export function validateProjectManifest(raw) {
   const depthErr = checkDepthAndKeys(raw);
   if (depthErr) return { ok: false, errors: [depthErr] };
   if (!isPlainObject(raw)) return { ok: false, errors: ['Manifest project phải là JSON object.'] };
@@ -276,10 +285,11 @@ export function validateProjectManifestV2(raw) {
   if (raw.format !== PROJECT_FORMAT) {
     errors.push(`Định dạng project không đúng (nhận "${raw.format}", cần "${PROJECT_FORMAT}").`);
   }
-  if (raw.schemaVersion !== PROJECT_SCHEMA_VERSION) {
-    errors.push(`Phiên bản schema project (${raw.schemaVersion}) không được hỗ trợ. Ứng dụng hỗ trợ schemaVersion ${PROJECT_SCHEMA_VERSION}.`);
+  if (!SUPPORTED_PROJECT_SCHEMA_VERSIONS.includes(raw.schemaVersion)) {
+    errors.push(`Phiên bản schema project (${raw.schemaVersion}) không được hỗ trợ. Ứng dụng hỗ trợ schemaVersion ${SUPPORTED_PROJECT_SCHEMA_VERSIONS.join(' và ')}.`);
     return { ok: false, errors };
   }
+  const isV3 = raw.schemaVersion === PROJECT_SCHEMA_VERSION_V3;
   if (typeof raw.projectId !== 'string' || raw.projectId.trim().length === 0 || raw.projectId.length > 128) {
     errors.push('projectId không hợp lệ.');
   }
@@ -422,10 +432,16 @@ export function validateProjectManifestV2(raw) {
   }
 
   // Cells
+  let totalMaskStrokes = 0;
+  let totalMaskPoints = 0;
+  let totalMaskBytes = 0;
+
   if (!isPlainObject(raw.cells)) {
     errors.push('cells phải là object.');
   } else {
-    const allowedCell = new Set(['assetId', 'fitMode', 'alphaThreshold', 'zoom', 'offsetX', 'offsetY', 'anchor']);
+    const allowedCell = isV3
+      ? new Set(['assetId', 'fitMode', 'alphaThreshold', 'zoom', 'offsetX', 'offsetY', 'anchor', 'mask'])
+      : new Set(['assetId', 'fitMode', 'alphaThreshold', 'zoom', 'offsetX', 'offsetY', 'anchor']);
     const allowedAnchor = new Set(['mode', 'x', 'y']);
     for (const key of Object.keys(raw.cells)) {
       const parsed = parseCellKey(key);
@@ -471,6 +487,26 @@ export function validateProjectManifestV2(raw) {
           }
         }
       }
+      if (isV3 && cell.mask !== undefined) {
+        const src = sourceMap.get(asset.sourceId);
+        const mRes = validateCellMaskStrict(cell.mask, src, `cells["${key}"]`);
+        if (!mRes.ok) {
+          errors.push(...mRes.errors);
+        } else {
+          totalMaskStrokes += mRes.strokes;
+          totalMaskPoints += mRes.points;
+          totalMaskBytes += mRes.bytes;
+        }
+      }
+    }
+    if (totalMaskStrokes > LIMITS.MAX_PROJECT_MASK_STROKES) {
+      errors.push(`Tổng số nét mặt nạ trong project (${totalMaskStrokes}) vượt giới hạn ${LIMITS.MAX_PROJECT_MASK_STROKES}.`);
+    }
+    if (totalMaskPoints > LIMITS.MAX_PROJECT_MASK_POINTS) {
+      errors.push(`Tổng số điểm mặt nạ trong project (${totalMaskPoints}) vượt giới hạn ${LIMITS.MAX_PROJECT_MASK_POINTS}.`);
+    }
+    if (totalMaskBytes > LIMITS.MAX_PROJECT_MASK_BYTES) {
+      errors.push(`Tổng dung lượng mặt nạ trong project (${totalMaskBytes} B) vượt giới hạn ${LIMITS.MAX_PROJECT_MASK_BYTES} B.`);
     }
   }
 
@@ -575,29 +611,105 @@ export function validateProjectManifestV2(raw) {
     }
   }
 
+  if (errors.length === 0) {
+    const manifestBytes = measureUtf8Bytes(serializeManifestJsonCompact(raw));
+    if (manifestBytes > LIMITS.MAX_MANIFEST_BYTES) {
+      errors.push(`Tổng dung lượng manifest (${manifestBytes} B) vượt giới hạn ${LIMITS.MAX_MANIFEST_BYTES} B.`);
+    }
+  }
+
   return { ok: errors.length === 0, errors };
 }
 
 /**
- * Validate Atlas Metadata V1 output structure.
+ * Backward-compatible export alias for validateProjectManifest (validates V2 strictly, V3 with masks).
  */
-export function validateAtlasMetadataV1(meta) {
+export function validateProjectManifestV2(raw) {
+  return validateProjectManifest(raw);
+}
+
+function _validateAtlasMetadataCommon(meta, expectedVersion) {
   const errors = [];
   if (!isPlainObject(meta)) return { ok: false, errors: ['Metadata phải là object.'] };
+  const topErr = checkAllowedKeys(meta, new Set(['format', 'schemaVersion', 'image', 'atlas', 'frames', 'animations']), 'atlas-metadata');
+  if (topErr) errors.push(topErr);
   if (meta.format !== ATLAS_FORMAT) errors.push('format không khớp.');
-  if (meta.schemaVersion !== ATLAS_SCHEMA_VERSION) errors.push('schemaVersion không khớp.');
+  if (meta.schemaVersion !== expectedVersion) errors.push(`schemaVersion phải là ${expectedVersion}.`);
   if (meta.image !== null && typeof meta.image !== 'string') errors.push('image phải là string hoặc null.');
-  if (!isPlainObject(meta.atlas)) errors.push('atlas thiếu.');
-  else {
+
+  let cw = 0;
+  let ch = 0;
+  if (!isPlainObject(meta.atlas)) {
+    errors.push('atlas thiếu.');
+  } else {
+    const aErr = checkAllowedKeys(
+      meta.atlas,
+      new Set(['width', 'height', 'cols', 'rows', 'cellWidth', 'cellHeight', 'origin', 'indexBase', 'guidesNormalized']),
+      'atlas'
+    );
+    if (aErr) errors.push(aErr);
     if (meta.atlas.origin !== 'top-left') errors.push('origin phải là top-left.');
     if (meta.atlas.indexBase !== 0) errors.push('indexBase phải là 0.');
     if (meta.atlas.width !== meta.atlas.cols * meta.atlas.cellWidth) errors.push('atlas.width không khớp.');
     if (meta.atlas.height !== meta.atlas.rows * meta.atlas.cellHeight) errors.push('atlas.height không khớp.');
+    cw = meta.atlas.cellWidth || 0;
+    ch = meta.atlas.cellHeight || 0;
   }
-  if (!Array.isArray(meta.frames)) errors.push('frames phải là mảng.');
-  else if (meta.atlas && meta.frames.length !== meta.atlas.cols * meta.atlas.rows) {
-    errors.push('Số phần tử frames phải bằng cols × rows.');
+
+  const allowedFrameKeys = expectedVersion === ATLAS_SCHEMA_VERSION_V2
+    ? new Set(['id', 'row', 'col', 'x', 'y', 'w', 'h', 'empty', 'anchorCellPx', 'contentBoundsCellPx'])
+    : new Set(['id', 'row', 'col', 'x', 'y', 'w', 'h', 'empty', 'anchorCellPx']);
+
+  if (!Array.isArray(meta.frames)) {
+    errors.push('frames phải là mảng.');
+  } else {
+    if (meta.atlas && meta.frames.length !== meta.atlas.cols * meta.atlas.rows) {
+      errors.push('Số phần tử frames phải bằng cols × rows.');
+    }
+    for (let i = 0; i < meta.frames.length; i++) {
+      const f = meta.frames[i];
+      if (!isPlainObject(f)) { errors.push(`frames[${i}] không hợp lệ.`); break; }
+      const fkErr = checkAllowedKeys(f, allowedFrameKeys, `frames[${i}]`);
+      if (fkErr) { errors.push(fkErr); break; }
+      if (f.anchorCellPx !== undefined && f.anchorCellPx !== null) {
+        if (!isPlainObject(f.anchorCellPx)) { errors.push(`frames[${i}].anchorCellPx không hợp lệ.`); break; }
+        const anErr = checkAllowedKeys(f.anchorCellPx, new Set(['x', 'y']), `frames[${i}].anchorCellPx`);
+        if (anErr) { errors.push(anErr); break; }
+        if (typeof f.anchorCellPx.x !== 'number' || !Number.isFinite(f.anchorCellPx.x) ||
+            typeof f.anchorCellPx.y !== 'number' || !Number.isFinite(f.anchorCellPx.y)) {
+          errors.push(`frames[${i}].anchorCellPx không hữu hạn.`); break;
+        }
+      }
+      if (expectedVersion === ATLAS_SCHEMA_VERSION_V2 && f.contentBoundsCellPx !== undefined && f.contentBoundsCellPx !== null) {
+        const b = f.contentBoundsCellPx;
+        if (!isPlainObject(b)) { errors.push(`frames[${i}].contentBoundsCellPx không hợp lệ.`); break; }
+        const bErr = checkAllowedKeys(b, new Set(['x', 'y', 'w', 'h']), `frames[${i}].contentBoundsCellPx`);
+        if (bErr) { errors.push(bErr); break; }
+        if (
+          !Number.isInteger(b.x) || !Number.isInteger(b.y) || !Number.isInteger(b.w) || !Number.isInteger(b.h) ||
+          b.x < 0 || b.y < 0 || b.w < 1 || b.h < 1 ||
+          (cw > 0 && b.x + b.w > cw) || (ch > 0 && b.y + b.h > ch)
+        ) {
+          errors.push(`frames[${i}].contentBoundsCellPx nằm ngoài phạm vi ô (${cw}×${ch}).`); break;
+        }
+      }
+    }
   }
+
   if (!Array.isArray(meta.animations)) errors.push('animations phải là mảng.');
   return { ok: errors.length === 0, errors };
+}
+
+/**
+ * Validate Atlas Metadata V1 output structure strictly against schemas/atlas-v1.schema.json.
+ */
+export function validateAtlasMetadataV1(meta) {
+  return _validateAtlasMetadataCommon(meta, ATLAS_SCHEMA_VERSION);
+}
+
+/**
+ * Validate Atlas Metadata V2 output structure strictly against schemas/atlas-v2.schema.json.
+ */
+export function validateAtlasMetadataV2(meta) {
+  return _validateAtlasMetadataCommon(meta, ATLAS_SCHEMA_VERSION_V2);
 }
