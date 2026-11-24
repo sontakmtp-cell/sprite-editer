@@ -81,7 +81,10 @@ def run_suite_for_browser(browser_name: str, executable_path: Path):
 
         def reset_project():
             page.evaluate("""() => {
+                for (const d of document.querySelectorAll('dialog[open]')) d.close('cancel');
                 const app = window.__SSB_APP__;
+                app.endJob();
+                app.assetManager.decodeDelayMs = 0;
                 app.assetManager.clearAllBitmaps();
                 app.assetManager.pixelAnalysisCache.clear();
                 app.referenceCellKey = null;
@@ -939,6 +942,411 @@ def run_suite_for_browser(browser_name: str, executable_path: Path):
             record("T27", True, f"Project remained dirty ('{badge_txt}') after PNG export")
         except Exception as e:
             record("T27", False, str(e))
+
+        # ------------------------------------------------------------------
+        # R1: Clipboard integrity — delete asset -> paste rejected; Undo delete -> paste OK; New project clears clipboard
+        # ------------------------------------------------------------------
+        try:
+            reset_project()
+            page.set_input_files("#file-import-single", str(FIX / "t02_rect_400x200.png"))
+            page.evaluate("""async () => {
+                const f = document.getElementById('file-import-single').files[0];
+                await window.__SSB_APP__.handleIncomingFiles([f], { targetCell: { row: 0, col: 0 }, directSingle: true });
+            }""")
+            page.wait_for_function("() => Boolean(window.__SSB_APP__.store.project.cells['0:0'])")
+
+            r1_res = page.evaluate("""async () => {
+                const app = window.__SSB_APP__;
+                app.selectCell(0, 0);
+                app.copySelectedCells();
+                const aid = app.store.project.cells['0:0'].assetId;
+                // Delete asset then try pasting into (0,1) -> MUST be blocked
+                app.store.deleteAsset(aid);
+                app.selectCell(0, 1);
+                await app.pasteClipboard();
+                const cellAfterBadPaste = Boolean(app.store.project.cells['0:1']);
+
+                // Undo asset delete -> paste into (0,1) MUST succeed!
+                app.store.undo();
+                app.selectCell(0, 1);
+                await app.pasteClipboard();
+                const cellAfterUndoPaste = Boolean(app.store.project.cells['0:1']);
+
+                // Copy again, load new project -> clipboard MUST be cleared
+                app.selectCell(0, 0);
+                app.copySelectedCells();
+                const hasClipBefore = Boolean(app.clipboard);
+                app.store.loadProject({
+                    format: 'sprite-sheet-builder-project', schemaVersion: 2, projectId: 'r1_new', name: 'New',
+                    grid: { cols: 4, rows: 4, cellWidth: 192, cellHeight: 208 }, presetId: null, expectedCells: null,
+                    sources: [], assets: [], cells: {}, animations: [],
+                    settings: { smoothing: true, guides: { x: 0.5, y: 0.9 }, defaultAlphaThreshold: 8, webpQuality: 0.92 }, customPresets: []
+                }, { markClean: true });
+                const hasClipAfter = Boolean(app.clipboard);
+                return { cellAfterBadPaste, cellAfterUndoPaste, hasClipBefore, hasClipAfter };
+            }""")
+            assert r1_res == {"cellAfterBadPaste": False, "cellAfterUndoPaste": True, "hasClipBefore": True, "hasClipAfter": False}, f"R1 failed: {r1_res}"
+            record("R1", True, "Paste blocked after asset delete, succeeded after Undo delete, clipboard cleared on project switch")
+        except Exception as e:
+            record("R1", False, str(e))
+
+        # ------------------------------------------------------------------
+        # R2: Ctrl+click, Shift+click, same-cell click, marquee preserve unsaved draft
+        # ------------------------------------------------------------------
+        try:
+            reset_project()
+            page.set_input_files("#file-import-single", str(FIX / "t02_rect_400x200.png"))
+            page.evaluate("""async () => {
+                const f = document.getElementById('file-import-single').files[0];
+                await window.__SSB_APP__.handleIncomingFiles([f], { targetCell: { row: 0, col: 0 }, directSingle: true });
+            }""")
+            page.wait_for_function("() => Boolean(window.__SSB_APP__.store.project.cells['0:0'])")
+
+            # Make draft edit X=12 without clicking Apply
+            page.fill("#ed-offset-x", "12")
+            page.locator("#ed-offset-x").dispatch_event("change")
+            assert page.evaluate("() => window.__SSB_APP__.editorView.hasUnsavedDraft()") is True
+
+            # 1. Re-click same cell (0,0) -> draft stays intact, NO dialog!
+            page.evaluate("async () => await window.__SSB_APP__.selectCellWithGuard(0, 0)")
+            assert page.evaluate("() => !document.getElementById('dialog-confirm').open") is True
+            assert page.evaluate("() => window.__SSB_APP__.editorView.draft.offsetX") == 12
+
+            # 2. Ctrl+click neighbor (0,1) -> MUST prompt unsaved draft dialog; choose 'Tiếp tục sửa'
+            page.evaluate("() => { window.__SSB_APP__.selectCellWithGuard(0, 1, { ctrl: true }); }")
+            page.wait_for_selector("#dialog-confirm[open]", timeout=5000)
+            page.locator("#confirm-footer button:has-text('Tiếp tục sửa')").click()
+            page.wait_for_function("() => !document.getElementById('dialog-confirm').open")
+            page.wait_for_timeout(30)
+            assert page.evaluate("() => window.__SSB_APP__.editorView.draft.offsetX") == 12, "Draft offsetX lost after Ctrl+click Continue"
+            assert page.evaluate("() => window.__SSB_APP__.activeCellKey") == "0:0", "Active cell changed after Continue"
+
+            # 3. Shift+click neighbor (0,1) -> MUST prompt unsaved draft dialog; choose 'Áp dụng'
+            page.evaluate("() => { window.__SSB_APP__.selectCellWithGuard(0, 1, { shift: true }); }")
+            page.wait_for_selector("#dialog-confirm[open]", timeout=5000)
+            page.locator("#confirm-footer button:has-text('Áp dụng')").click()
+            page.wait_for_function("() => !document.getElementById('dialog-confirm').open && window.__SSB_APP__.activeCellKey === '0:1'", timeout=5000)
+            assert page.evaluate("() => window.__SSB_APP__.store.project.cells['0:0'].offsetX") == 12, "Draft offsetX not committed on Apply"
+            record("R2", True, "Re-click preserved draft without dialog; Ctrl+click & Shift+click triggered unsaved draft guard cleanly")
+        except Exception as e:
+            record("R2", False, str(e))
+
+        # ------------------------------------------------------------------
+        # R3: Job tokens, cancel during final decode, and concurrent open/new blocking
+        # ------------------------------------------------------------------
+        try:
+            reset_project()
+            page.set_input_files("#file-import-single", str(FIX / "t02_rect_400x200.png"))
+            r3_res = page.evaluate("""async () => {
+                const app = window.__SSB_APP__;
+                const f = document.getElementById('file-import-single').files[0];
+
+                // Test 1: Cancel during the LAST (and only) file decode in handleIncomingFiles
+                app.assetManager.decodeDelayMs = 80;
+                const importPromise = app.handleIncomingFiles([f], { targetCell: { row: 0, col: 0 }, directSingle: true });
+                await new Promise(r => setTimeout(r, 20));
+                const newBtnDisabledDuringJob = document.getElementById('btn-new-project').disabled;
+                const openBtnDisabledDuringJob = document.getElementById('btn-open-project').disabled;
+                // Click Cancel while final image is still decoding!
+                document.getElementById('btn-cancel-job').click();
+                await importPromise;
+                app.assetManager.decodeDelayMs = 0;
+                const cellsAfterCancel = Object.keys(app.store.project.cells).length;
+                const jobCleared = app.activeJob === null;
+                // Test 2: openProjectFile cancelled mid-decode & revision change guard
+                // First create a valid .ssb in memory from 1 image
+                await app.handleIncomingFiles([f], { targetCell: { row: 0, col: 0 }, directSingle: true });
+                const snapProj = JSON.parse(JSON.stringify(app.store.project));
+                snapProj.name = 'OpenedProjectA';
+                const ssbPromise = new Promise(resolve => {
+                    // Build minimal valid File from saved .ssb via save/serialize? Better: use real openProjectFile with paused arrayBuffer!
+                    resolve();
+                });
+                await ssbPromise;
+
+                const beforeId = app.store.project.projectId;
+                let releaseRead;
+                const slowFile = {
+                    name: 'slow_open.ssb',
+                    size: 1024,
+                    arrayBuffer: () => new Promise(res => { releaseRead = () => res(new ArrayBuffer(32)); })
+                };
+                app.store.markSavedDirect(app.store.revision); // mark clean so no dirty dialog
+                const openPromise = app.openProjectFile(slowFile);
+                await new Promise(r => setTimeout(r, 15));
+                const openLockedSecondOpen = app.activeJob !== null && document.getElementById('btn-open-project').disabled;
+                // Cancel mid-read
+                document.getElementById('btn-cancel-job').click();
+                releaseRead();
+                await openPromise;
+                const afterId = app.store.project.projectId;
+
+                return {
+                    newBtnDisabledDuringJob,
+                    openBtnDisabledDuringJob,
+                    cellsAfterCancel,
+                    jobCleared,
+                    openLockedSecondOpen,
+                    sameProjectAfterCancelOpen: beforeId === afterId && app.activeJob === null
+                };
+            }""")
+            assert r3_res == {
+                "newBtnDisabledDuringJob": True,
+                "openBtnDisabledDuringJob": True,
+                "cellsAfterCancel": 0,
+                "jobCleared": True,
+                "openLockedSecondOpen": True,
+                "sameProjectAfterCancelOpen": True
+            }, f"R3 failed: {r3_res}"
+            record("R3", True, "New/Open locked during active job; Cancel during final import decode & mid-open both aborted cleanly without overwriting session")
+        except Exception as e:
+            record("R3", False, str(e))
+
+        # ------------------------------------------------------------------
+        # R4: Real IndexedDB recovery refuses missing source & cancels old project timer on New/Open
+        # ------------------------------------------------------------------
+        try:
+            reset_project()
+            page.set_input_files("#file-import-single", str(FIX / "t02_rect_400x200.png"))
+            page.evaluate("""async () => {
+                const f = document.getElementById('file-import-single').files[0];
+                await window.__SSB_APP__.handleIncomingFiles([f], { targetCell: { row: 0, col: 0 }, directSingle: true });
+            }""")
+            page.wait_for_function("() => Boolean(window.__SSB_APP__.store.project.cells['0:0'])")
+
+            r4_res = page.evaluate("""async () => {
+                const app = window.__SSB_APP__;
+                if (app.recovery.status !== 'available') return { skipped: true };
+                // Save valid snapshot for Project A
+                app.store.commit('rename', p => { p.name = 'SavedA'; });
+                const s1 = await app.recovery.saveSnapshotNow(app.store.project, app.store.revision, app.assetManager);
+
+                // Attempt save with missing source binary -> MUST fail and preserve SavedA!
+                const missingMgr = { getSourceBytes: () => null };
+                const s2 = await app.recovery.saveSnapshotNow(app.store.project, app.store.revision + 1, missingMgr);
+
+                // Schedule short debounce on SavedA, then load New empty project -> timer MUST NOT overwrite SavedA!
+                const origDebounce = app.recovery.debounceMs;
+                app.recovery.debounceMs = 30;
+                app.recovery.scheduleSave(() => ({ project: app.store.project, revision: app.store.revision, assetManager: app.assetManager }), app.store.project.projectId);
+                app.store.loadProject({
+                    format: 'sprite-sheet-builder-project', schemaVersion: 2, projectId: 'empty_r4', name: 'EmptyB',
+                    grid: { cols: 4, rows: 4, cellWidth: 192, cellHeight: 208 }, presetId: null, expectedCells: null,
+                    sources: [], assets: [], cells: {}, animations: [],
+                    settings: { smoothing: true, guides: { x: 0.5, y: 0.9 }, defaultAlphaThreshold: 8, webpQuality: 0.92 }, customPresets: []
+                }, { markClean: true });
+                await new Promise(r => setTimeout(r, 80));
+                app.recovery.debounceMs = origDebounce;
+
+                const snap = await app.recovery.loadValidSnapshot();
+                await app.recovery.clearRecovery();
+                return { s1Ok: s1.ok, s2Reason: s2.reason, snapName: snap?.project?.name, snapSources: snap?.sourceBinaries?.size };
+            }""")
+            if not r4_res.get("skipped"):
+                assert r4_res == {"s1Ok": True, "s2Reason": "missing-source", "snapName": "SavedA", "snapSources": 1}, f"R4 failed: {r4_res}"
+            record("R4", True, "Real IndexedDB recovery refused missing-source snapshot & cancelled old timer on New project; SavedA preserved intact")
+        except Exception as e:
+            record("R4", False, str(e))
+
+        # ------------------------------------------------------------------
+        # R5: Oversized .ssb file rejected BEFORE arrayBuffer() and BEFORE dirty discard prompt
+        # ------------------------------------------------------------------
+        try:
+            reset_project()
+            page.evaluate("""() => {
+                const app = window.__SSB_APP__;
+                app.store.commit('dirty', p => { p.name = 'DirtyBeforeR5'; });
+                window.__R5_ARRAYBUFFER_CALLED__ = false;
+                const fakeHugeFile = {
+                    name: 'huge_600mib.ssb',
+                    size: 600 * 1024 * 1024,
+                    arrayBuffer: async () => { window.__R5_ARRAYBUFFER_CALLED__ = true; return new ArrayBuffer(0); }
+                };
+                app.openProjectFile(fakeHugeFile);
+            }""")
+            page.wait_for_selector("#dialog-confirm[open]", timeout=5000)
+            dlg_title = page.locator("#confirm-title").text_content()
+            page.locator("#confirm-footer button").first.click()
+            page.wait_for_function("() => !document.getElementById('dialog-confirm').open")
+            ab_called = page.evaluate("() => window.__R5_ARRAYBUFFER_CALLED__")
+            proj_name = page.evaluate("() => window.__SSB_APP__.store.project.name")
+            assert "vượt giới hạn" in dlg_title.lower(), f"Expected size limit dialog, got '{dlg_title}'"
+            assert ab_called is False, "arrayBuffer() was called on oversized file!"
+            assert proj_name == "DirtyBeforeR5"
+            record("R5", True, "600 MiB fake .ssb rejected before arrayBuffer() and before dirty-discard prompt; project untouched")
+        except Exception as e:
+            record("R5", False, str(e))
+
+        # ------------------------------------------------------------------
+        # PR #1 follow-up: three user journeys missed by the original R2/R3 tests.
+        # ------------------------------------------------------------------
+        def import_first_frame():
+            page.set_input_files("#file-import-single", str(FIX / "t02_rect_400x200.png"))
+            page.evaluate("""async () => {
+                const f = document.getElementById('file-import-single').files[0];
+                await window.__SSB_APP__.handleIncomingFiles([f], { targetCell: { row: 0, col: 0 }, directSingle: true });
+            }""")
+            page.wait_for_function("() => Boolean(window.__SSB_APP__.store.project.cells['0:0'])")
+
+        def set_offset_x(value):
+            field = page.locator("#ed-offset-x")
+            field.fill(str(value))
+            field.press("Tab")  # commit the form field to the draft, not to the project
+
+        def rename_project(name):
+            field = page.locator("#project-name-input")
+            field.fill(name)
+            field.press("Tab")
+
+        try:
+            reset_project()
+            import_first_frame()
+            set_offset_x(12)
+            assert page.evaluate("() => window.__SSB_APP__.editorView.hasUnsavedDraft()")
+            rename_project("Đổi tên khi đang căn khung")
+            state = page.evaluate("""() => {
+                const app = window.__SSB_APP__;
+                return {
+                    name: app.store.project.name,
+                    draft: app.editorView.hasUnsavedDraft(),
+                    x: app.editorView.draft.offsetX,
+                    committedX: app.store.project.cells['0:0'].offsetX
+                };
+            }""")
+            assert state == {
+                "name": "Đổi tên khi đang căn khung", "draft": True, "x": 12, "committedX": 0
+            }, f"Rename must not discard or implicitly apply the frame draft: {state}"
+            assert not page.locator("#dialog-confirm").is_visible()
+            page.click("#btn-draft-apply")
+            assert page.evaluate("() => window.__SSB_APP__.store.project.cells['0:0'].offsetX") == 12
+            record("R7", True, "Project rename preserved unapplied X=12; explicit Apply still committed the offset")
+        except Exception as e:
+            record("R7", False, str(e))
+
+        try:
+            # Save a real archive with a frame, then switch back to a distinct live project.
+            reset_project()
+            import_first_frame()
+            rename_project("Archived project")
+            _, ssb_bytes = download_bytes(lambda: page.click("#btn-save-project"))
+            reset_project()
+            import_first_frame()
+            rename_project("Live project")
+            before_id = page.evaluate("() => window.__SSB_APP__.store.project.projectId")
+
+            def begin_paused_open():
+                page.evaluate("""() => {
+                    const mgr = window.__SSB_APP__.assetManager;
+                    const original = mgr._decodeBytesToBitmap;
+                    mgr._decodeBytesToBitmap = function (...args) {
+                        if (window.__SSB_APP__.activeJob?.kind !== 'open') return original.apply(this, args);
+                        return new Promise((resolve, reject) => {
+                            window.__r8ReleaseDecode = () => {
+                                mgr._decodeBytesToBitmap = original;
+                                delete window.__r8ReleaseDecode;
+                                Promise.resolve().then(() => original.apply(this, args)).then(resolve, reject);
+                            };
+                        });
+                    };
+                    window.__r8ResetDecode = () => {
+                        window.__r8ReleaseDecode?.();
+                        mgr._decodeBytesToBitmap = original;
+                        delete window.__r8ResetDecode;
+                    };
+                }""")
+                with page.expect_file_chooser() as chooser:
+                    page.click("#btn-open-project")
+                chooser.value.set_files({"name": "archive.ssb", "mimeType": "application/zip", "buffer": ssb_bytes})
+                page.get_by_role("button", name="Bỏ thay đổi và tiếp tục").click()
+                page.wait_for_function("() => typeof window.__r8ReleaseDecode === 'function'", timeout=5000)
+                assert page.evaluate("() => window.__SSB_APP__.activeJob?.kind") == "open"
+
+            try:
+                begin_paused_open()
+                # An actual click/keyboard sequence, not JavaScript changing the input.
+                field = page.locator("#ed-offset-x")
+                box = field.bounding_box()
+                assert box is not None
+                page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                page.keyboard.press("Control+a")
+                page.keyboard.type("34")
+                page.keyboard.press("Tab")
+                blocked = page.evaluate("""() => {
+                    const app = window.__SSB_APP__;
+                    const input = document.getElementById('ed-offset-x');
+                    return !!input.closest('[inert]') && !app.editorView.hasUnsavedDraft() &&
+                        app.editorView.draft.offsetX === 0 && input.value === '0';
+                }""")
+                page.evaluate("() => window.__r8ReleaseDecode()")
+                page.wait_for_function("() => !window.__SSB_APP__.activeJob", timeout=5000)
+                assert blocked, "Frame editor accepted a new offset while a validated archive was opening"
+                assert page.evaluate("() => window.__SSB_APP__.store.project.name") == "Archived project"
+                assert page.evaluate("() => window.__SSB_APP__.store.project.projectId") != before_id
+                assert page.locator("#ed-offset-x").evaluate("el => !el.closest('[inert]')")
+            finally:
+                page.evaluate("() => window.__r8ResetDecode?.()")
+                page.wait_for_function("() => !window.__SSB_APP__.activeJob", timeout=5000)
+            # Defense in depth: if a pending programmatic edit bypasses the inert panel,
+            # the final replacement guard must keep the current project and that draft.
+            reset_project()
+            import_first_frame()
+            rename_project("Live project with pending edit")
+            before_id = page.evaluate("() => window.__SSB_APP__.store.project.projectId")
+            try:
+                begin_paused_open()
+                page.locator("#ed-offset-x").evaluate("""input => {
+                    input.value = '56';
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                }""")
+                assert page.evaluate("() => window.__SSB_APP__.editorView.hasUnsavedDraft()")
+                page.evaluate("() => window.__r8ReleaseDecode()")
+                page.wait_for_function("() => !window.__SSB_APP__.activeJob", timeout=5000)
+                state = page.evaluate("""() => {
+                    const app = window.__SSB_APP__;
+                    return [app.store.project.projectId, app.editorView.hasUnsavedDraft(), app.editorView.draft.offsetX];
+                }""")
+                assert state == [before_id, True, 56], f"Open replaced a newly dirty draft: {state}"
+                assert page.locator("#ed-offset-x").evaluate("el => !el.closest('[inert]')")
+            finally:
+                page.evaluate("() => window.__r8ResetDecode?.()")
+                page.wait_for_function("() => !window.__SSB_APP__.activeJob", timeout=5000)
+            record("R8", True, "Valid .ssb open blocked edits during paused decode; final guard preserved a separately introduced draft")
+        except Exception as e:
+            record("R8", False, str(e))
+
+        try:
+            reset_project()
+            import_first_frame()
+            set_offset_x(12)
+            page.set_input_files("#file-import-images", str(FIX / "t05_alpha_levels_90x60.png"))
+            # Synthetic drop carrying a real fixture File through the actual atlas drop handler.
+            page.evaluate("""() => {
+                const app = window.__SSB_APP__;
+                const dt = new DataTransfer();
+                dt.items.add(document.getElementById('file-import-images').files[0]);
+                const view = app.atlasView;
+                const rect = view.canvas.getBoundingClientRect();
+                const grid = app.store.project.grid;
+                view.stageWrap.dispatchEvent(new DragEvent('drop', {
+                    bubbles: true,
+                    cancelable: true,
+                    dataTransfer: dt,
+                    clientX: rect.left + 42 + (1.5 * grid.cellWidth * view.zoom),
+                    clientY: rect.top + 24 + (0.5 * grid.cellHeight * view.zoom)
+                }));
+            }""")
+            page.wait_for_selector("#dialog-confirm[open]", timeout=5000)
+            page.locator("#dialog-confirm").get_by_role("button", name="Áp dụng", exact=True).click()
+            page.wait_for_function("() => !window.__SSB_APP__.activeJob && !!window.__SSB_APP__.store.project.cells['0:1']", timeout=5000)
+            assert page.evaluate("""() => {
+                const app = window.__SSB_APP__;
+                const first = app.store.project.cells['0:0'];
+                const second = app.store.project.cells['0:1'];
+                return first.offsetX === 12 && first.assetId !== second.assetId && app.store.project.sources.length === 2;
+            }""")
+            record("R9", True, "Dropping a single File after Apply imported to the second slot and preserved the first frame's committed offset")
+        except Exception as e:
+            record("R9", False, str(e))
 
         ctx.close()
 

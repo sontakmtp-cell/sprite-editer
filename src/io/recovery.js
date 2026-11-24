@@ -24,6 +24,9 @@ export class RecoveryManager {
     this.db = null;
     this.debounceTimer = null;
     this.debounceMs = 30000; // ~30s idle debounce (Spec §10.3)
+    this.scheduledProjectId = null;
+    this.scheduledToken = 0;
+    this._opQueue = Promise.resolve();
     this.lastSavedSnapshotRev = null;
     this.multiTabConflict = false;
     this.channel = null;
@@ -229,83 +232,136 @@ export class RecoveryManager {
   }
 
   cancelPendingSave() {
+    this.scheduledToken += 1;
+    this.scheduledProjectId = null;
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
   }
 
+  _enqueueOp(fn) {
+    const run = this._opQueue.then(fn, fn);
+    this._opQueue = run.catch(() => {});
+    return run;
+  }
+
   /**
-   * Schedule debounced idle snapshot save (30s default).
+   * Schedule debounced idle snapshot save (30s default), pinned to the current projectId.
+   * Cancelled automatically on New/Open/Restore so an old project timer can never overwrite
+   * recovery with a newly opened/empty project (R4).
    */
-  scheduleSave(getProjectAndAssetMgr) {
+  scheduleSave(getProjectAndAssetMgr, expectedProjectId = null) {
     this.cancelPendingSave();
     if (!this.enabled || !this.db || this.status !== 'available' || this.multiTabConflict) return;
-    this.debounceTimer = setTimeout(async () => {
+    const token = this.scheduledToken;
+    this.scheduledProjectId = expectedProjectId;
+    this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
+      if (token !== this.scheduledToken) return;
       const ctx = getProjectAndAssetMgr();
-      if (!ctx) return;
-      await this.saveSnapshotNow(ctx.project, ctx.revision, ctx.assetManager);
+      if (!ctx || !ctx.project) return;
+      if (expectedProjectId && ctx.project.projectId !== expectedProjectId) return;
+      this.saveSnapshotNow(ctx.project, ctx.revision, ctx.assetManager, { expectedProjectId });
     }, this.debounceMs);
   }
 
   /**
-   * Atomically save committed snapshot + only missing source blobs (incremental by source ID).
-   * Never overwrites a previously valid snapshot if writing fails!
+   * Atomically save committed snapshot + missing source blobs + orphan cleanup in ONE
+   * consistent IndexedDB readwrite transaction (serialized via _opQueue).
+   * Aborts BEFORE touching IndexedDB if ANY referenced source binary is missing or invalid (R4).
    */
-  async saveSnapshotNow(project, revision, assetManager) {
-    if (!this.enabled || !this.db || this.multiTabConflict) return { ok: false, reason: 'disabled-or-conflict' };
-    try {
-      // 1. Write only sources not already present in IDB
-      const existingIds = new Set(await this._txGetAllKeys(STORE_SOURCES));
-      const neededIds = new Set(project.sources.map((s) => s.id));
+  saveSnapshotNow(project, revision, assetManager, { expectedProjectId = null } = {}) {
+    if (!this.enabled || !this.db || this.multiTabConflict) {
+      return Promise.resolve({ ok: false, reason: 'disabled-or-conflict' });
+    }
+    if (!project || (expectedProjectId && project.projectId !== expectedProjectId)) {
+      return Promise.resolve({ ok: false, reason: 'project-mismatch' });
+    }
 
-      for (const src of project.sources) {
-        if (existingIds.has(src.id)) continue;
-        const bytes = assetManager.getSourceBytes(src.id);
-        if (!bytes) continue;
-        const blob = new Blob([bytes], { type: src.mime });
-        await this._txPut(STORE_SOURCES, {
-          id: src.id,
-          mime: src.mime,
-          byteLength: bytes.byteLength,
-          blob
+    // Eagerly capture immutable snapshot metadata & all source bytes synchronously BEFORE awaiting IDB
+    const projectCopy = deepClone(project);
+    const val = validateProjectManifestV2(projectCopy);
+    if (!val.ok) {
+      return Promise.resolve({ ok: false, reason: 'invalid-manifest', error: val.errors[0] });
+    }
+
+    const capturedSources = new Map();
+    for (const src of projectCopy.sources) {
+      const bytes = assetManager?.getSourceBytes ? assetManager.getSourceBytes(src.id) : null;
+      if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0 || bytes.byteLength !== src.byteLength) {
+        // NEVER overwrite a valid recovery snapshot with a snapshot missing source binaries!
+        return Promise.resolve({
+          ok: false,
+          reason: 'missing-source',
+          error: `Thiếu dữ liệu nhị phân nguồn "${src.name}" (${src.id}) — giữ nguyên bản recovery trước đó.`
         });
       }
-
-      // 2. Atomically write committed snapshot marker in a single transaction
-      const snapshot = {
-        key: SNAPSHOT_KEY,
-        status: 'committed',
-        savedAt: Date.now(),
-        tabId: this.tabId,
-        revision,
-        project: deepClone(project)
-      };
-      await this._txPut(STORE_META, snapshot);
-
-      // 3. Garbage collect orphaned sources from IDB only AFTER new snapshot is committed
-      for (const oldId of existingIds) {
-        if (!neededIds.has(oldId)) {
-          await this._txDelete(STORE_SOURCES, oldId).catch(() => {});
-        }
-      }
-
-      this.lastSavedSnapshotRev = revision;
-      this.status = 'available';
-      const timeStr = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      this.statusMessage = `Đã sao lưu recovery lúc ${timeStr} (rev ${revision})`;
-      this._notify();
-      return { ok: true };
-    } catch (err) {
-      const isQuota = err && (err.name === 'QuotaExceededError' || String(err.message).includes('quota'));
-      this.status = isQuota ? 'quota-exceeded' : 'unavailable';
-      this.statusMessage = isQuota
-        ? 'Bộ nhớ recovery hết dung lượng — hãy lưu project (.ssb)'
-        : 'Phục hồi tự động không khả dụng — hãy lưu project';
-      this._notify();
-      return { ok: false, error: err?.message || 'Lỗi ghi recovery' };
+      capturedSources.set(src.id, {
+        id: src.id,
+        mime: src.mime,
+        byteLength: bytes.byteLength,
+        blob: new Blob([bytes], { type: src.mime })
+      });
     }
+
+    return this._enqueueOp(async () => {
+      if (!this.enabled || !this.db || this.multiTabConflict) {
+        return { ok: false, reason: 'disabled-or-conflict' };
+      }
+      try {
+        const existingIds = new Set(await this._txGetAllKeys(STORE_SOURCES));
+        const neededIds = new Set(projectCopy.sources.map((s) => s.id));
+
+        const snapshot = {
+          key: SNAPSHOT_KEY,
+          status: 'committed',
+          savedAt: Date.now(),
+          tabId: this.tabId,
+          revision,
+          project: projectCopy
+        };
+
+        // Single atomic transaction across both stores: either all new sources + marker + GC commit together,
+        // or the entire transaction rolls back leaving the previous valid snapshot untouched!
+        await new Promise((resolve, reject) => {
+          const tx = this.db.transaction([STORE_SOURCES, STORE_META], 'readwrite');
+          const srcStore = tx.objectStore(STORE_SOURCES);
+          const metaStore = tx.objectStore(STORE_META);
+
+          for (const src of projectCopy.sources) {
+            if (!existingIds.has(src.id)) {
+              srcStore.put(capturedSources.get(src.id));
+            }
+          }
+          metaStore.put(snapshot);
+          for (const oldId of existingIds) {
+            if (!neededIds.has(oldId)) {
+              srcStore.delete(oldId);
+            }
+          }
+
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error || new Error('Lỗi ghi giao dịch recovery.'));
+          tx.onabort = () => reject(tx.error || new Error('Giao dịch recovery bị hủy.'));
+        });
+
+        this.lastSavedSnapshotRev = revision;
+        this.status = 'available';
+        const timeStr = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        this.statusMessage = `Đã sao lưu recovery lúc ${timeStr} (rev ${revision})`;
+        this._notify();
+        return { ok: true };
+      } catch (err) {
+        const isQuota = err && (err.name === 'QuotaExceededError' || String(err.message).includes('quota'));
+        this.status = isQuota ? 'quota-exceeded' : 'unavailable';
+        this.statusMessage = isQuota
+          ? 'Bộ nhớ recovery hết dung lượng — hãy lưu project (.ssb)'
+          : 'Phục hồi tự động không khả dụng — hãy lưu project';
+        this._notify();
+        return { ok: false, error: err?.message || 'Lỗi ghi recovery' };
+      }
+    });
   }
 
   /**
@@ -346,22 +402,26 @@ export class RecoveryManager {
 
   /**
    * Clear all stored recovery data (does NOT touch downloaded `.ssb` files).
+   * Serialized through _opQueue so it cannot race with an in-flight autosave (R4).
    */
-  async clearRecovery() {
+  clearRecovery() {
     this.cancelPendingSave();
-    if (!this.db) return;
-    await new Promise((resolve, reject) => {
-      const tx = this.db.transaction([STORE_META, STORE_SOURCES], 'readwrite');
-      tx.objectStore(STORE_META).clear();
-      tx.objectStore(STORE_SOURCES).clear();
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+    if (!this.db) return Promise.resolve();
+    return this._enqueueOp(async () => {
+      if (!this.db) return;
+      await new Promise((resolve, reject) => {
+        const tx = this.db.transaction([STORE_META, STORE_SOURCES], 'readwrite');
+        tx.objectStore(STORE_META).clear();
+        tx.objectStore(STORE_SOURCES).clear();
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      this.lastSavedSnapshotRev = null;
+      if (this.status === 'available' || this.status === 'quota-exceeded') {
+        this.status = 'available';
+        this.statusMessage = 'Đã xóa dữ liệu recovery cục bộ';
+        this._notify();
+      }
     });
-    this.lastSavedSnapshotRev = null;
-    if (this.status === 'available' || this.status === 'quota-exceeded') {
-      this.status = 'available';
-      this.statusMessage = 'Đã xóa dữ liệu recovery cục bộ';
-      this._notify();
-    }
   }
 }

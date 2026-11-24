@@ -4,7 +4,7 @@
     "results": {
       "T01": {
         "status": "PASS",
-        "evidence": "Loaded file:// offline in 192 ms, 0 network requests, 0 page errors"
+        "evidence": "Loaded file:// offline in 163 ms, 0 network requests, 0 page errors"
       },
       "T02": {
         "status": "PASS",
@@ -64,7 +64,7 @@
       },
       "T16": {
         "status": "PASS",
-        "evidence": "Saved Test.ssb (6846 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
+        "evidence": "Saved Test.ssb (6849 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
       },
       "T17": {
         "status": "PASS",
@@ -109,6 +109,26 @@
       "T27": {
         "status": "PASS",
         "evidence": "Project remained dirty ('• Chưa lưu') after PNG export"
+      },
+      "R1": {
+        "status": "PASS",
+        "evidence": "Paste blocked after asset delete, succeeded after Undo delete, clipboard cleared on project switch"
+      },
+      "R2": {
+        "status": "PASS",
+        "evidence": "Re-click preserved draft without dialog; Ctrl+click & Shift+click triggered unsaved draft guard cleanly"
+      },
+      "R3": {
+        "status": "PASS",
+        "evidence": "New/Open locked during active job; Cancel during final import decode & mid-open both aborted cleanly without overwriting session"
+      },
+      "R4": {
+        "status": "PASS",
+        "evidence": "Real IndexedDB recovery refused missing-source snapshot & cancelled old timer on New project; SavedA preserved intact"
+      },
+      "R5": {
+        "status": "PASS",
+        "evidence": "600 MiB fake .ssb rejected before arrayBuffer() and before dirty-discard prompt; project untouched"
       }
     },
     "network_requests": [],
@@ -120,7 +140,7 @@
     "results": {
       "T01": {
         "status": "PASS",
-        "evidence": "Loaded file:// offline in 189 ms, 0 network requests, 0 page errors"
+        "evidence": "Loaded file:// offline in 194 ms, 0 network requests, 0 page errors"
       },
       "T02": {
         "status": "PASS",
@@ -180,7 +200,7 @@
       },
       "T16": {
         "status": "PASS",
-        "evidence": "Saved Test.ssb (6846 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
+        "evidence": "Saved Test.ssb (6842 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
       },
       "T17": {
         "status": "PASS",
@@ -225,6 +245,26 @@
       "T27": {
         "status": "PASS",
         "evidence": "Project remained dirty ('• Chưa lưu') after PNG export"
+      },
+      "R1": {
+        "status": "PASS",
+        "evidence": "Paste blocked after asset delete, succeeded after Undo delete, clipboard cleared on project switch"
+      },
+      "R2": {
+        "status": "PASS",
+        "evidence": "Re-click preserved draft without dialog; Ctrl+click & Shift+click triggered unsaved draft guard cleanly"
+      },
+      "R3": {
+        "status": "PASS",
+        "evidence": "New/Open locked during active job; Cancel during final import decode & mid-open both aborted cleanly without overwriting session"
+      },
+      "R4": {
+        "status": "PASS",
+        "evidence": "Real IndexedDB recovery refused missing-source snapshot & cancelled old timer on New project; SavedA preserved intact"
+      },
+      "R5": {
+        "status": "PASS",
+        "evidence": "600 MiB fake .ssb rejected before arrayBuffer() and before dirty-discard prompt; project untouched"
       }
     },
     "network_requests": [],

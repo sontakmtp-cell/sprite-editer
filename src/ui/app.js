@@ -52,10 +52,12 @@ export class SpriteSheetBuilderApp {
     this.selectedLibAssets = new Set();
     this.referenceCellKey = null;
 
-    // Internal clipboard (Spec §8)
-    this.clipboard = null; // { type: 'cells', origin:{row,col}, items:[{dr,dc,cell}] } | { type: 'transform', transform }
+    // Internal clipboard (Spec §8, R1: scoped to projectId & cleared on project switch)
+    this.clipboard = null; // { type: 'cells', projectId, items:[{dr,dc,cell}] } | { type: 'transform', transform }
 
-    // Active long-running job state
+    // Active long-running job state (R3: exclusive job token & per-job abort signal)
+    this._jobSeq = 0;
+    this.activeJob = null; // { id, kind, abortController, signal }
     this.isJobRunning = false;
     this.activeAbortController = null;
     this.customExportEncoder = null; // Used for testing encoder failure (T08)
@@ -176,20 +178,29 @@ export class SpriteSheetBuilderApp {
         }
       }
 
-      this._syncAllUI();
+      // R1 & R4: On project switch (New/Open/Restore), clear cell clipboard & cancel stale recovery timer
+      if (event.type === 'project-loaded') {
+        if (this.clipboard && this.clipboard.type === 'cells') {
+          this.clipboard = null;
+        }
+        this.recovery.cancelPendingSave();
+      }
 
-      // Schedule debounced recovery save on committed changes
+      this._syncAllUI({ resetEditor: event.type === 'project-loaded' });
+
+      // Schedule debounced recovery save pinned to current projectId (R4)
       if (event.type === 'commit' || event.type === 'undo' || event.type === 'redo') {
+        const scheduledProjId = this.store.project.projectId;
         this.recovery.scheduleSave(() => ({
           project: this.store.project,
           revision: this.store.revision,
           assetManager: this.assetManager
-        }));
+        }), scheduledProjId);
       }
     });
   }
 
-  _syncAllUI() {
+  _syncAllUI({ resetEditor = false } = {}) {
     const p = this.store.project;
     $('project-name-input').value = p.name;
     $('btn-undo').disabled = !this.store.canUndo() || this.isJobRunning;
@@ -244,7 +255,19 @@ export class SpriteSheetBuilderApp {
     // Render subviews
     this.renderLibrary();
     this.atlasView.requestRender();
-    this.editorView.loadCell(this.activeCellKey);
+    // An unrelated project commit (for example a rename) must not reset an
+    // unapplied edit or its local undo history. Replacement projects always
+    // reset the editor, even when opening a copy with matching IDs and cells.
+    const currentCell = p.cells[this.activeCellKey] || null;
+    const preserveDraft = !resetEditor &&
+      this.editorView.hasUnsavedDraft() &&
+      this.editorView.cellKey === this.activeCellKey &&
+      JSON.stringify(this.editorView.committedCell) === JSON.stringify(currentCell);
+    if (preserveDraft) {
+      this.editorView.requestRender();
+    } else {
+      this.editorView.loadCell(this.activeCellKey);
+    }
     this.animationView.onProjectChanged();
   }
 
@@ -305,18 +328,57 @@ export class SpriteSheetBuilderApp {
   }
 
   // =========================================================================
-  // SELECTION & REFERENCE FRAME
+  // SELECTION & REFERENCE FRAME (R2: unified draft-preserving selection path)
   // =========================================================================
+  _computeNextActiveCellForClick(row, col, { ctrl = false, shift = false } = {}) {
+    const key = cellKey(row, col);
+    if (shift && this.anchorSelectKey) {
+      return key;
+    }
+    if (ctrl) {
+      if (this.selectedCells.has(key) && this.selectedCells.size > 1) {
+        if (this.activeCellKey === key) {
+          for (const k of this.selectedCells) {
+            if (k !== key) return k;
+          }
+        }
+        return this.activeCellKey;
+      }
+      return key;
+    }
+    return key;
+  }
+
+  async selectCellWithGuard(row, col, { ctrl = false, shift = false } = {}) {
+    if (!isCellInGrid(row, col, this.store.project.grid)) return false;
+    const nextActive = this._computeNextActiveCellForClick(row, col, { ctrl, shift });
+    if (nextActive !== this.activeCellKey && this.editorView.hasUnsavedDraft()) {
+      const ok = await this.ensureDraftResolved();
+      if (!ok) return false;
+    }
+    this.selectCell(row, col, { ctrl, shift });
+    return true;
+  }
+
+  async selectRectRangeWithGuard(r0, c0, r1, c1) {
+    const nextActive = cellKey(r0, c0);
+    if (nextActive !== this.activeCellKey && this.editorView.hasUnsavedDraft()) {
+      const ok = await this.ensureDraftResolved();
+      if (!ok) return false;
+    }
+    this.selectRectRange(r0, c0, r1, c1);
+    return true;
+  }
+
   selectCell(row, col, { ctrl = false, shift = false } = {}) {
     if (!isCellInGrid(row, col, this.store.project.grid)) return;
     const key = cellKey(row, col);
+    const prevActive = this.activeCellKey;
 
     if (shift && this.anchorSelectKey) {
       const a = parseCellKey(this.anchorSelectKey);
       if (a) {
-        this.selectRectRange(a.row, a.col, row, col);
-        this.activeCellKey = key;
-        this.editorView.loadCell(this.activeCellKey);
+        this.selectRectRange(a.row, a.col, row, col, { activeKey: key });
         return;
       }
     }
@@ -337,23 +399,29 @@ export class SpriteSheetBuilderApp {
     }
 
     this.atlasView.requestRender();
-    this.editorView.loadCell(this.activeCellKey);
+    // Never overwrite unsaved draft when active cell did not change (R2)
+    if (this.activeCellKey !== prevActive || this.editorView.cellKey !== this.activeCellKey) {
+      this.editorView.loadCell(this.activeCellKey);
+    }
   }
 
-  selectRectRange(r0, c0, r1, c1) {
+  selectRectRange(r0, c0, r1, c1, { activeKey = null } = {}) {
     const minR = Math.min(r0, r1);
     const maxR = Math.max(r0, r1);
     const minC = Math.min(c0, c1);
     const maxC = Math.max(c0, c1);
+    const prevActive = this.activeCellKey;
     this.selectedCells.clear();
     for (let r = minR; r <= maxR; r++) {
       for (let c = minC; c <= maxC; c++) {
         this.selectedCells.add(cellKey(r, c));
       }
     }
-    this.activeCellKey = cellKey(r0, c0);
+    this.activeCellKey = activeKey || cellKey(r0, c0);
     this.atlasView.requestRender();
-    this.editorView.loadCell(this.activeCellKey);
+    if (this.activeCellKey !== prevActive || this.editorView.cellKey !== this.activeCellKey) {
+      this.editorView.loadCell(this.activeCellKey);
+    }
   }
 
   focusEditorPanel() {
@@ -547,9 +615,12 @@ export class SpriteSheetBuilderApp {
   // FILE INGESTION & BATCH / SINGLE IMPORT (Spec §5.1, §5.2)
   // =========================================================================
   async handleIncomingFiles(files, { targetCell = null, libraryOnly = false, directSingle = false } = {}) {
-    // Capture project & revision synchronously BEFORE any await (Spec §12.2, T21)
+    if (this.activeJob) {
+      showToast('Đang có tác vụ khác đang chạy — vui lòng chờ hoàn tất hoặc bấm Hủy.', 'warn');
+      return;
+    }
+    // Keep the originating project across the draft prompt.
     const startProjectId = this.store.project.projectId;
-    const startRevision = this.store.revision;
 
     const okDraft = await this.ensureDraftResolved();
     if (!okDraft) return;
@@ -559,21 +630,31 @@ export class SpriteSheetBuilderApp {
       return;
     }
 
-    const abort = this.beginJob(`Đang kiểm tra ${files.length} file ảnh...`);
+    // Applying the draft is an intentional change. Detect only revisions
+    // made after that choice, while decoding the input.
+    const startRevision = this.store.revision;
+    const job = this.beginJob(`Đang kiểm tra ${files.length} file ảnh...`, 'import');
+    if (!job) return;
     const items = [];
     const usage = this.store.getProjectResourceUsage();
     let accPixels = usage.totalSourcePixels;
     let accBytes = usage.totalSourceBytes;
     let accSources = usage.sourceCount;
+    let aborted = false;
 
     try {
       for (let i = 0; i < files.length; i++) {
-        if (abort.signal.aborted) {
-          showToast('Đã hủy quá trình nhập ảnh.', 'info');
-          return;
+        if (!this.isJobCurrent(job)) {
+          aborted = true;
+          break;
         }
-        this.updateJobProgress(i + 1, files.length, `Đang đọc & xác thực ${i + 1}/${files.length}: ${files[i].name}`);
+        this.updateJobProgress(i + 1, files.length, `Đang đọc & xác thực ${i + 1}/${files.length}: ${files[i].name}`, job);
         const res = await this.assetManager.inspectAndVerifyFile(files[i]);
+        // Re-check abort/job currency AFTER awaiting decode (including the final file — R3!)
+        if (!this.isJobCurrent(job)) {
+          aborted = true;
+          break;
+        }
         if (!res.ok) {
           items.push({ id: generateId('bad'), name: res.name, importIndex: i, valid: false, error: res.error });
           continue;
@@ -604,12 +685,23 @@ export class SpriteSheetBuilderApp {
         });
       }
     } finally {
-      this.endJob();
+      this.endJob(job);
     }
 
-    // Revision / project guard for slow async decode (Spec §12.2, T21!)
+    if (aborted || job.signal.aborted) {
+      showToast('Đã hủy quá trình nhập ảnh.', 'info');
+      return;
+    }
+
+    // Revision / project guard for slow async decode (Spec §12.2, T21, R3)
     if (this.store.project.projectId !== startProjectId) {
       showToast('Project đã thay đổi trong lúc giải mã ảnh — kết quả cũ đã bị hủy an toàn.', 'warn');
+      return;
+    }
+
+    // A new draft made during decoding was not part of the first prompt.
+    if (this.editorView.hasUnsavedDraft()) {
+      showToast('Có bản nháp mới trong lúc nhập ảnh — hãy xử lý bản nháp rồi thử lại.', 'warn');
       return;
     }
 
@@ -793,6 +885,7 @@ export class SpriteSheetBuilderApp {
     const minC = Math.min(...coords.map((p) => p.col));
     this.clipboard = {
       type: 'cells',
+      projectId: this.store.project.projectId,
       items: coords.map((p) => ({
         dr: p.row - minR,
         dc: p.col - minC,
@@ -842,6 +935,31 @@ export class SpriteSheetBuilderApp {
       return;
     }
 
+    // R1: Verify clipboard belongs to current project & all referenced assets/sources still exist!
+    if (this.clipboard.projectId && this.clipboard.projectId !== this.store.project.projectId) {
+      this.clipboard = null;
+      showToast('Clipboard thuộc project trước đó và đã được xóa.', 'warn');
+      return;
+    }
+    const validAssets = new Map(this.store.project.assets.map((a) => [a.id, a]));
+    const validSources = new Set(this.store.project.sources.map((s) => s.id));
+    const missingAssets = [];
+    for (const it of this.clipboard.items) {
+      const aid = it.cell?.assetId;
+      const asset = aid ? validAssets.get(aid) : null;
+      if (!asset || !validSources.has(asset.sourceId)) {
+        if (!missingAssets.includes(aid || '(trống)')) missingAssets.push(aid || '(trống)');
+      }
+    }
+    if (missingAssets.length > 0) {
+      showToast(
+        `Không thể dán: ${missingAssets.length} ảnh/asset trong clipboard đã bị xóa khỏi project. Hãy Undo việc xóa asset nếu muốn dán lại.`,
+        'error',
+        5500
+      );
+      return;
+    }
+
     const grid = this.store.project.grid;
     let plan = [];
     let outOfBounds = 0;
@@ -882,7 +1000,11 @@ export class SpriteSheetBuilderApp {
       if (choice !== 'ok') return;
     }
 
-    this.store.pasteCells(plan);
+    const pasteRes = this.store.pasteCells(plan);
+    if (!pasteRes.committed) {
+      showToast('Không thể dán vì dữ liệu nguồn không còn hợp lệ.', 'error');
+      return;
+    }
     showToast(`Đã dán ${plan.length} ô.`, 'ok');
   }
 
@@ -914,21 +1036,26 @@ export class SpriteSheetBuilderApp {
   // SAVE / OPEN `.ssb` & EXPORT JOBS (Spec §10.2, §11.2)
   // =========================================================================
   async saveProject({ asCopy = false } = {}) {
+    if (this.activeJob) {
+      showToast('Đang có tác vụ khác đang chạy — vui lòng chờ hoàn tất hoặc bấm Hủy.', 'warn');
+      return;
+    }
     const okDraft = await this.ensureDraftResolved();
     if (!okDraft) return;
-    if (this.isJobRunning) return;
+    if (this.activeJob) return;
 
     const snapshot = deepClone(this.store.project);
     const revAtSave = this.store.revision;
-    const abort = this.beginJob('Đang đóng gói file project .ssb...');
+    const job = this.beginJob('Đang đóng gói file project .ssb...', 'save');
+    if (!job) return;
 
     try {
       const ssbBytes = await serializeProjectToSsb(
         snapshot,
         (id) => this.assetManager.getSourceBytes(id),
-        (done, total, msg) => this.updateJobProgress(done, total, msg)
+        (done, total, msg) => this.updateJobProgress(done, total, msg, job)
       );
-      if (abort.signal.aborted) {
+      if (!this.isJobCurrent(job)) {
         showToast('Đã hủy lưu project.', 'info');
         return;
       }
@@ -946,26 +1073,74 @@ export class SpriteSheetBuilderApp {
       if (!asCopy) this.store.markSaveFailed();
       showToast(`Lưu project thất bại: ${err.message || err}`, 'error', 6000);
     } finally {
-      this.endJob();
+      this.endJob(job);
     }
   }
 
   async openProjectFile(file) {
+    if (!file) return;
+
+    // R3: Only one project-changing job at a time
+    if (this.activeJob) {
+      showToast('Đang có tác vụ khác đang chạy — hãy chờ hoàn tất hoặc bấm Hủy trước khi mở project khác.', 'warn');
+      return;
+    }
+
+    // R5: Validate File.size BEFORE prompting to discard current project AND BEFORE reading into RAM!
+    if (typeof file.size === 'number') {
+      if (file.size === 0) {
+        await showChoiceDialog({
+          title: 'Không thể mở file project .ssb',
+          message: `File "${file.name}" rỗng (0 byte). Phiên làm việc hiện tại vẫn được giữ nguyên.`,
+          buttons: [{ label: 'Đóng', value: 'ok', autofocus: true }]
+        });
+        return;
+      }
+      if (file.size > LIMITS.MAX_ARCHIVE_BYTES) {
+        const sizeMiB = (file.size / (1024 * 1024)).toFixed(1);
+        const maxMiB = (LIMITS.MAX_ARCHIVE_BYTES / (1024 * 1024)).toFixed(0);
+        await showChoiceDialog({
+          title: 'File project vượt giới hạn dung lượng',
+          message: `File "${file.name}" có dung lượng ${sizeMiB} MiB, vượt giới hạn ${maxMiB} MiB. Đã chặn trước khi đọc vào bộ nhớ để bảo vệ phiên hiện tại.`,
+          buttons: [{ label: 'Đóng', value: 'ok', autofocus: true }]
+        });
+        return;
+      }
+    }
+
     const okDraft = await this.ensureDraftResolved();
     if (!okDraft) return;
     const okDirty = await this.ensureUnsavedProjectConfirmed('mở project khác');
     if (!okDirty) return;
 
-    const abort = this.beginJob(`Đang đọc và kiểm tra "${file.name}"...`);
+    // Re-check job lock after confirmation dialogs
+    if (this.activeJob) {
+      showToast('Đang có tác vụ khác đang chạy — không thể mở project lúc này.', 'warn');
+      return;
+    }
+
+    const startProjectId = this.store.project.projectId;
+    const startRevision = this.store.revision;
+    const job = this.beginJob(`Đang đọc và kiểm tra "${file.name}"...`, 'open');
+    if (!job) return;
+
     try {
       const buf = await file.arrayBuffer();
+      if (!this.isJobCurrent(job)) {
+        showToast('Đã hủy mở project.', 'info');
+        return;
+      }
       const bytes = new Uint8Array(buf);
-      if (abort.signal.aborted) return;
 
       const res = await deserializeProjectFromSsb(bytes, (done, total, msg) => {
-        this.updateJobProgress(done, total, msg);
+        this.updateJobProgress(done, total, msg, job);
       });
+      if (!this.isJobCurrent(job)) {
+        showToast('Đã hủy mở project.', 'info');
+        return;
+      }
       if (!res.ok) {
+        this.endJob(job);
         await showChoiceDialog({
           title: 'Không thể mở file project .ssb',
           message: 'File project không hợp lệ hoặc bị hỏng. Phiên làm việc hiện tại vẫn được giữ nguyên:',
@@ -977,18 +1152,33 @@ export class SpriteSheetBuilderApp {
 
       // Verify real browser decode of every source before committing replacement!
       for (let i = 0; i < res.project.sources.length; i++) {
-        if (abort.signal.aborted) return;
+        if (!this.isJobCurrent(job)) {
+          showToast('Đã hủy mở project.', 'info');
+          return;
+        }
         const src = res.project.sources[i];
-        this.updateJobProgress(i + 1, res.project.sources.length, `Đang xác thực ảnh nguồn ${i + 1}/${res.project.sources.length}...`);
+        this.updateJobProgress(i + 1, res.project.sources.length, `Đang xác thực ảnh nguồn ${i + 1}/${res.project.sources.length}...`, job);
         const bin = res.sourceBinaries.get(src.id);
         try {
           const bmp = await this.assetManager._decodeBytesToBitmap(bin.bytes, bin.mime);
-          if (bmp.width !== src.width || bmp.height !== src.height) {
-            if (typeof bmp.close === 'function') bmp.close();
-            throw new Error(`Kích thước giải mã (${bmp.width}×${bmp.height}) không khớp manifest (${src.width}×${src.height}).`);
-          }
+          const bmpW = bmp.width;
+          const bmpH = bmp.height;
           if (typeof bmp.close === 'function') bmp.close();
+
+          // Re-check abort/job currency AFTER awaiting decode (including the final image — R3!)
+          if (!this.isJobCurrent(job)) {
+            showToast('Đã hủy mở project.', 'info');
+            return;
+          }
+          if (bmpW !== src.width || bmpH !== src.height) {
+            throw new Error(`Kích thước giải mã (${bmpW}×${bmpH}) không khớp manifest (${src.width}×${src.height}).`);
+          }
         } catch (decErr) {
+          if (!this.isJobCurrent(job)) {
+            showToast('Đã hủy mở project.', 'info');
+            return;
+          }
+          this.endJob(job);
           await showChoiceDialog({
             title: 'Lỗi giải mã nguồn ảnh trong .ssb',
             message: `Nguồn "${src.name}" bị lỗi giải mã. Project hiện tại được giữ nguyên.`,
@@ -999,16 +1189,30 @@ export class SpriteSheetBuilderApp {
         }
       }
 
+      // Final atomic guard right before replacing active project (R3)
+      if (!this.isJobCurrent(job)) {
+        showToast('Đã hủy mở project.', 'info');
+        return;
+      }
+      if (this.store.project.projectId !== startProjectId ||
+          this.store.revision !== startRevision ||
+          this.editorView.hasUnsavedDraft()) {
+        showToast('Project hiện tại đã thay đổi trong lúc mở file — đã hủy ghi đè để bảo toàn dữ liệu.', 'warn', 5000);
+        return;
+      }
+
       this._loadDeserializedProject(res.project, res.sourceBinaries, { markClean: true });
       showToast(`Đã mở project "${res.project.name}" thành công.`, 'ok');
     } catch (err) {
       showToast(`Lỗi mở project: ${err.message || err}`, 'error', 6000);
     } finally {
-      this.endJob();
+      this.endJob(job);
     }
   }
 
   _loadDeserializedProject(project, sourceBinaries, { markClean = true } = {}) {
+    this.recovery.cancelPendingSave();
+    this.clipboard = null;
     this.assetManager.clearAllBitmaps();
     this.assetManager.pixelAnalysisCache.clear();
     for (const [id, rec] of sourceBinaries.entries()) {
@@ -1023,18 +1227,22 @@ export class SpriteSheetBuilderApp {
   }
 
   async runExportJob(config) {
-    if (this.isJobRunning) return;
+    if (this.activeJob) {
+      showToast('Đang có tác vụ khác đang chạy — vui lòng chờ hoàn tất hoặc bấm Hủy.', 'warn');
+      return null;
+    }
     const snapshot = deepClone(this.store.project);
-    const abort = this.beginJob('Đang chuẩn bị xuất tài nguyên...');
+    const job = this.beginJob('Đang chuẩn bị xuất tài nguyên...', 'export');
+    if (!job) return null;
 
     try {
       const result = await executeExportJob(snapshot, this.assetManager, config, {
-        signal: abort.signal,
+        signal: job.signal,
         customEncoder: this.customExportEncoder,
-        onProgress: (done, total, msg) => this.updateJobProgress(done, total, msg)
+        onProgress: (done, total, msg) => this.updateJobProgress(done, total, msg, job)
       });
 
-      if (abort.signal.aborted) {
+      if (!this.isJobCurrent(job)) {
         showToast('Đã hủy xuất tài nguyên — không tạo file tải xuống.', 'info');
         return null;
       }
@@ -1044,34 +1252,56 @@ export class SpriteSheetBuilderApp {
       showToast(`Đã xuất "${result.filename}" (${(result.bytes.byteLength / 1024).toFixed(1)} KiB).`, 'ok', 4500);
       return result;
     } catch (err) {
-      if (err?.message === 'CANCELLED') {
+      if (err?.message === 'CANCELLED' || job.signal.aborted) {
         showToast('Đã hủy xuất tài nguyên — không tạo file tải xuống.', 'info');
         return null;
       }
       showToast(`Xuất thất bại: ${err.message || err}`, 'error', 6500);
       return null;
     } finally {
-      this.endJob();
+      this.endJob(job);
     }
   }
 
   // =========================================================================
-  // JOB PROGRESS BAR & CANCEL CONTROL (Spec §3.5, §11.2)
+  // JOB PROGRESS BAR & CANCEL CONTROL (Spec §3.5, §11.2, R3)
   // =========================================================================
-  beginJob(message) {
+  isJobCurrent(job) {
+    return Boolean(job && this.activeJob && this.activeJob.id === job.id && !job.signal.aborted);
+  }
+
+  beginJob(message, kind = 'generic') {
+    if (this.activeJob) {
+      showToast('Đang có tác vụ khác đang chạy — vui lòng chờ hoàn tất hoặc bấm Hủy.', 'warn');
+      return null;
+    }
+    const id = ++this._jobSeq;
+    const abortController = new AbortController();
+    const job = { id, kind, abortController, signal: abortController.signal };
+    this.activeJob = job;
     this.isJobRunning = true;
-    this.activeAbortController = new AbortController();
+    this.activeAbortController = abortController;
+
+    // Editing a frame while its current project is being replaced gives
+    // the impression those edits will survive. Keep the cancel control
+    // accessible, but remove the editor from pointer and focus interaction.
+    if (kind === 'open') $('panel-right').inert = true;
+
     $('status-progress-wrap').classList.remove('hidden');
     $('status-progress-text').textContent = message;
     $('status-progress-bar').removeAttribute('value');
-    $('btn-export').disabled = true;
+    $('btn-new-project').disabled = true;
+    $('btn-open-project').disabled = true;
     $('btn-save-project').disabled = true;
+    $('btn-save-copy').disabled = true;
+    $('btn-export').disabled = true;
     $('btn-undo').disabled = true;
     $('btn-redo').disabled = true;
-    return this.activeAbortController;
+    return job;
   }
 
-  updateJobProgress(done, total, message) {
+  updateJobProgress(done, total, message, job = null) {
+    if (job && !this.isJobCurrent(job)) return;
     $('status-progress-text').textContent = message;
     const bar = $('status-progress-bar');
     if (total > 0) {
@@ -1080,12 +1310,19 @@ export class SpriteSheetBuilderApp {
     }
   }
 
-  endJob() {
+  endJob(job = null) {
+    // Stale job must NEVER clear state belonging to a newer job (R3)
+    if (job && (!this.activeJob || this.activeJob.id !== job.id)) return;
+    if (this.activeJob?.kind === 'open') $('panel-right').inert = false;
+    this.activeJob = null;
     this.isJobRunning = false;
     this.activeAbortController = null;
     $('status-progress-wrap').classList.add('hidden');
-    $('btn-export').disabled = false;
+    $('btn-new-project').disabled = false;
+    $('btn-open-project').disabled = false;
     $('btn-save-project').disabled = false;
+    $('btn-save-copy').disabled = false;
+    $('btn-export').disabled = false;
     $('btn-undo').disabled = !this.store.canUndo();
     $('btn-redo').disabled = !this.store.canRedo();
   }
@@ -1110,12 +1347,19 @@ export class SpriteSheetBuilderApp {
       }
     });
 
-    // New / Open / Save / Save Copy
+    // New / Open / Save / Save Copy (R3: blocked while activeJob running; R1/R4: clear clipboard & cancel recovery timer)
     $('btn-new-project').addEventListener('click', async () => {
+      if (this.activeJob) {
+        showToast('Đang có tác vụ đang chạy — hãy chờ hoàn tất hoặc bấm Hủy trước khi tạo project mới.', 'warn');
+        return;
+      }
       const okDraft = await this.ensureDraftResolved();
       if (!okDraft) return;
       const okDirty = await this.ensureUnsavedProjectConfirmed('tạo project mới');
       if (!okDirty) return;
+      if (this.activeJob) return;
+      this.recovery.cancelPendingSave();
+      this.clipboard = null;
       this.assetManager.clearAllBitmaps();
       this.assetManager.pixelAnalysisCache.clear();
       this.referenceCellKey = null;
@@ -1128,6 +1372,10 @@ export class SpriteSheetBuilderApp {
     });
 
     $('btn-open-project').addEventListener('click', () => {
+      if (this.activeJob) {
+        showToast('Đang có tác vụ đang chạy — hãy chờ hoàn tất hoặc bấm Hủy trước khi mở project.', 'warn');
+        return;
+      }
       const inp = $('file-open-project');
       inp.value = '';
       inp.onchange = async () => {
@@ -1512,6 +1760,8 @@ export class SpriteSheetBuilderApp {
 
       // Arrow keys: if an image cell is active and editor panel or stage focused -> nudge 1px / Shift 10px (or navigate grid if empty)
       if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+        // The global keyboard handler can otherwise bypass the inert editor.
+        if (this.activeJob?.kind === 'open') return;
         const step = e.shiftKey ? 10 : 1;
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
@@ -1534,9 +1784,8 @@ export class SpriteSheetBuilderApp {
           const cur = parseCellKey(this.activeCellKey) || { row: 0, col: 0 };
           const nr = Math.max(0, Math.min(this.store.project.grid.rows - 1, cur.row + (e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0)));
           const nc = Math.max(0, Math.min(this.store.project.grid.cols - 1, cur.col + (e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0)));
-          const ok = await this.ensureDraftResolved();
+          const ok = await this.selectCellWithGuard(nr, nc, { shift: e.shiftKey });
           if (ok) {
-            this.selectCell(nr, nc, { shift: e.shiftKey });
             this.atlasView.scrollToCell(nr, nc);
           }
         }

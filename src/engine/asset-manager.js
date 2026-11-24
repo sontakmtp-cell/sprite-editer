@@ -202,6 +202,9 @@ export class AssetManager {
    * Decode raw image bytes into an ImageBitmap with EXIF orientation applied consistently (Spec §5.1, T26).
    */
   async _decodeBytesToBitmap(bytes, mime) {
+    if (this.decodeDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, this.decodeDelayMs));
+    }
     const blob = new Blob([bytes], { type: mime });
     if (typeof createImageBitmap === 'function') {
       try {

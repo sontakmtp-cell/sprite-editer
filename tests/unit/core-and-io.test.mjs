@@ -583,3 +583,100 @@ test('T23: Grid limits reject >64 cols/rows, >1024 cells, >8192px, >32Mi px; fla
   const tooManyPx = validateGrid({ cols: 8, rows: 8, cellWidth: 800, cellHeight: 800 }); // 6400x6400 = 40.96M > 33.55M
   assert.equal(tooManyPx.ok, false);
 });
+
+test('R1: Store pasteCells & setCellTransform reject missing/deleted assetId and preserve serializable project', async () => {
+  const png1 = makeSyntheticPng(32, 32);
+  const store = new ProjectStore(createEmptyProject('R1 Test'));
+  store.addSourcesAndAssets('add', [
+    { id: 's1', name: 'a.png', path: 'sources/s1.png', mime: 'image/png', width: 32, height: 32, byteLength: png1.byteLength }
+  ], [
+    { id: 'a1', sourceId: 's1', name: 'a', isRegion: false, region: { x: 0, y: 0, w: 32, h: 32 } }
+  ], [
+    { row: 0, col: 0, assetId: 'a1' }
+  ]);
+
+  const copiedCell = structuredClone(store.project.cells['0:0']);
+  // Delete asset -> pasteCells must refuse dangling reference!
+  store.deleteAsset('a1');
+  const badPaste = store.pasteCells([{ row: 0, col: 1, cell: copiedCell }]);
+  assert.equal(badPaste.committed, false);
+  assert.deepEqual(badPaste.missingAssetIds, ['a1']);
+  assert.equal(store.project.cells['0:1'], undefined);
+
+  // Project remains 100% valid and serializable
+  const ssbOk = await serializeProjectToSsb(store.project, () => png1);
+  assert.ok(ssbOk.byteLength > 0);
+
+  // Undo delete asset -> pasteCells now succeeds!
+  store.undo();
+  const okPaste = store.pasteCells([{ row: 0, col: 1, cell: copiedCell }]);
+  assert.equal(okPaste.committed, true);
+  assert.equal(store.project.cells['0:1'].assetId, 'a1');
+});
+
+test('R4: RecoveryManager cancels stale project timer & refuses snapshot with missing source binary', async () => {
+  const { RecoveryManager } = await import('../../src/io/recovery.js');
+  const png1 = makeSyntheticPng(16, 16);
+
+  // Minimal in-memory mock IDB matching the exact multi-store transaction API
+  const stores = { meta: new Map(), sources: new Map() };
+  const mockDb = {
+    transaction(names, mode) {
+      const tx = { oncomplete: null, onerror: null, onabort: null };
+      const pendingOps = [];
+      tx.objectStore = (name) => ({
+        getAllKeys() {
+          const req = { onsuccess: null, onerror: null, result: [...stores[name].keys()] };
+          queueMicrotask(() => req.onsuccess?.());
+          return req;
+        },
+        put(val) {
+          pendingOps.push(() => stores[name].set(name === 'meta' ? val.key : val.id, val));
+        },
+        delete(k) {
+          pendingOps.push(() => stores[name].delete(k));
+        }
+      });
+      if (mode === 'readwrite') {
+        queueMicrotask(() => {
+          for (const op of pendingOps) op();
+          tx.oncomplete?.();
+        });
+      }
+      return tx;
+    }
+  };
+
+  const rec = new RecoveryManager();
+  rec.db = mockDb;
+  rec.status = 'available';
+  rec.debounceMs = 20;
+
+  const storeA = new ProjectStore(createEmptyProject('Project A'));
+  storeA.addSourcesAndAssets('add', [
+    { id: 's1', name: 'a.png', path: 'sources/s1.png', mime: 'image/png', width: 16, height: 16, byteLength: png1.byteLength }
+  ], [
+    { id: 'a1', sourceId: 's1', name: 'a', isRegion: false, region: { x: 0, y: 0, w: 16, h: 16 } }
+  ], [{ row: 0, col: 0, assetId: 'a1' }]);
+
+  const goodAssetMgr = { getSourceBytes: (id) => (id === 's1' ? png1 : null) };
+  const saveGood = await rec.saveSnapshotNow(storeA.project, 2, goodAssetMgr);
+  assert.equal(saveGood.ok, true);
+  assert.equal(stores.meta.get('latest_committed_snapshot').project.name, 'Project A');
+  assert.ok(stores.sources.has('s1'));
+
+  // Missing source binary must NOT overwrite valid snapshot or delete s1!
+  const missingAssetMgr = { getSourceBytes: () => null };
+  const saveBad = await rec.saveSnapshotNow(storeA.project, 3, missingAssetMgr);
+  assert.equal(saveBad.ok, false);
+  assert.equal(saveBad.reason, 'missing-source');
+  assert.equal(stores.meta.get('latest_committed_snapshot').revision, 2);
+  assert.ok(stores.sources.has('s1'));
+
+  // Stale timer pinned to Project A must NOT save empty Project B if cancelled or projectId changed!
+  let currentProj = storeA.project;
+  rec.scheduleSave(() => ({ project: currentProj, revision: 1, assetManager: goodAssetMgr }), storeA.project.projectId);
+  currentProj = createEmptyProject('Project B Empty');
+  await new Promise((r) => setTimeout(r, 45));
+  assert.equal(stores.meta.get('latest_committed_snapshot').project.name, 'Project A');
+});
