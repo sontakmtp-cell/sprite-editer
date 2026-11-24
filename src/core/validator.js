@@ -14,10 +14,15 @@ import {
   PRESET_SCHEMA_VERSION,
   ATLAS_FORMAT,
   ATLAS_SCHEMA_VERSION,
+  ATLAS_SCHEMA_VERSION_V2,
   parseCellKey,
   isCellInGrid
 } from './constants.js';
-import { validateCellMaskStrict } from './mask.js';
+import {
+  validateCellMaskStrict,
+  measureUtf8Bytes,
+  serializeManifestJsonCompact
+} from './mask.js';
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SAFE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
@@ -606,6 +611,13 @@ export function validateProjectManifest(raw) {
     }
   }
 
+  if (errors.length === 0) {
+    const manifestBytes = measureUtf8Bytes(serializeManifestJsonCompact(raw));
+    if (manifestBytes > LIMITS.MAX_MANIFEST_BYTES) {
+      errors.push(`Tổng dung lượng manifest (${manifestBytes} B) vượt giới hạn ${LIMITS.MAX_MANIFEST_BYTES} B.`);
+    }
+  }
+
   return { ok: errors.length === 0, errors };
 }
 
@@ -616,26 +628,88 @@ export function validateProjectManifestV2(raw) {
   return validateProjectManifest(raw);
 }
 
-/**
- * Validate Atlas Metadata V1 output structure.
- */
-export function validateAtlasMetadataV1(meta) {
+function _validateAtlasMetadataCommon(meta, expectedVersion) {
   const errors = [];
   if (!isPlainObject(meta)) return { ok: false, errors: ['Metadata phải là object.'] };
+  const topErr = checkAllowedKeys(meta, new Set(['format', 'schemaVersion', 'image', 'atlas', 'frames', 'animations']), 'atlas-metadata');
+  if (topErr) errors.push(topErr);
   if (meta.format !== ATLAS_FORMAT) errors.push('format không khớp.');
-  if (meta.schemaVersion !== ATLAS_SCHEMA_VERSION) errors.push('schemaVersion không khớp.');
+  if (meta.schemaVersion !== expectedVersion) errors.push(`schemaVersion phải là ${expectedVersion}.`);
   if (meta.image !== null && typeof meta.image !== 'string') errors.push('image phải là string hoặc null.');
-  if (!isPlainObject(meta.atlas)) errors.push('atlas thiếu.');
-  else {
+
+  let cw = 0;
+  let ch = 0;
+  if (!isPlainObject(meta.atlas)) {
+    errors.push('atlas thiếu.');
+  } else {
+    const aErr = checkAllowedKeys(
+      meta.atlas,
+      new Set(['width', 'height', 'cols', 'rows', 'cellWidth', 'cellHeight', 'origin', 'indexBase', 'guidesNormalized']),
+      'atlas'
+    );
+    if (aErr) errors.push(aErr);
     if (meta.atlas.origin !== 'top-left') errors.push('origin phải là top-left.');
     if (meta.atlas.indexBase !== 0) errors.push('indexBase phải là 0.');
     if (meta.atlas.width !== meta.atlas.cols * meta.atlas.cellWidth) errors.push('atlas.width không khớp.');
     if (meta.atlas.height !== meta.atlas.rows * meta.atlas.cellHeight) errors.push('atlas.height không khớp.');
+    cw = meta.atlas.cellWidth || 0;
+    ch = meta.atlas.cellHeight || 0;
   }
-  if (!Array.isArray(meta.frames)) errors.push('frames phải là mảng.');
-  else if (meta.atlas && meta.frames.length !== meta.atlas.cols * meta.atlas.rows) {
-    errors.push('Số phần tử frames phải bằng cols × rows.');
+
+  const allowedFrameKeys = expectedVersion === ATLAS_SCHEMA_VERSION_V2
+    ? new Set(['id', 'row', 'col', 'x', 'y', 'w', 'h', 'empty', 'anchorCellPx', 'contentBoundsCellPx'])
+    : new Set(['id', 'row', 'col', 'x', 'y', 'w', 'h', 'empty', 'anchorCellPx']);
+
+  if (!Array.isArray(meta.frames)) {
+    errors.push('frames phải là mảng.');
+  } else {
+    if (meta.atlas && meta.frames.length !== meta.atlas.cols * meta.atlas.rows) {
+      errors.push('Số phần tử frames phải bằng cols × rows.');
+    }
+    for (let i = 0; i < meta.frames.length; i++) {
+      const f = meta.frames[i];
+      if (!isPlainObject(f)) { errors.push(`frames[${i}] không hợp lệ.`); break; }
+      const fkErr = checkAllowedKeys(f, allowedFrameKeys, `frames[${i}]`);
+      if (fkErr) { errors.push(fkErr); break; }
+      if (f.anchorCellPx !== undefined && f.anchorCellPx !== null) {
+        if (!isPlainObject(f.anchorCellPx)) { errors.push(`frames[${i}].anchorCellPx không hợp lệ.`); break; }
+        const anErr = checkAllowedKeys(f.anchorCellPx, new Set(['x', 'y']), `frames[${i}].anchorCellPx`);
+        if (anErr) { errors.push(anErr); break; }
+        if (typeof f.anchorCellPx.x !== 'number' || !Number.isFinite(f.anchorCellPx.x) ||
+            typeof f.anchorCellPx.y !== 'number' || !Number.isFinite(f.anchorCellPx.y)) {
+          errors.push(`frames[${i}].anchorCellPx không hữu hạn.`); break;
+        }
+      }
+      if (expectedVersion === ATLAS_SCHEMA_VERSION_V2 && f.contentBoundsCellPx !== undefined && f.contentBoundsCellPx !== null) {
+        const b = f.contentBoundsCellPx;
+        if (!isPlainObject(b)) { errors.push(`frames[${i}].contentBoundsCellPx không hợp lệ.`); break; }
+        const bErr = checkAllowedKeys(b, new Set(['x', 'y', 'w', 'h']), `frames[${i}].contentBoundsCellPx`);
+        if (bErr) { errors.push(bErr); break; }
+        if (
+          !Number.isInteger(b.x) || !Number.isInteger(b.y) || !Number.isInteger(b.w) || !Number.isInteger(b.h) ||
+          b.x < 0 || b.y < 0 || b.w < 1 || b.h < 1 ||
+          (cw > 0 && b.x + b.w > cw) || (ch > 0 && b.y + b.h > ch)
+        ) {
+          errors.push(`frames[${i}].contentBoundsCellPx nằm ngoài phạm vi ô (${cw}×${ch}).`); break;
+        }
+      }
+    }
   }
+
   if (!Array.isArray(meta.animations)) errors.push('animations phải là mảng.');
   return { ok: errors.length === 0, errors };
+}
+
+/**
+ * Validate Atlas Metadata V1 output structure strictly against schemas/atlas-v1.schema.json.
+ */
+export function validateAtlasMetadataV1(meta) {
+  return _validateAtlasMetadataCommon(meta, ATLAS_SCHEMA_VERSION);
+}
+
+/**
+ * Validate Atlas Metadata V2 output structure strictly against schemas/atlas-v2.schema.json.
+ */
+export function validateAtlasMetadataV2(meta) {
+  return _validateAtlasMetadataCommon(meta, ATLAS_SCHEMA_VERSION_V2);
 }

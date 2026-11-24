@@ -15,6 +15,7 @@ import {
   naturalCompare
 } from '../core/constants.js';
 import { validateGrid } from '../core/validator.js';
+import { checkProjectMaskBudgets, normalizeCellMask } from '../core/mask.js';
 import { ProjectStore, createEmptyProject, createDefaultCell } from '../core/store.js';
 import { AssetManager } from '../engine/asset-manager.js';
 import { executeExportJob, triggerBlobDownload } from '../engine/export-engine.js';
@@ -870,7 +871,11 @@ export class SpriteSheetBuilderApp {
       });
       if (c !== 'ok') return;
     }
-    this.store.moveOrSwapCell(fromKey, toKey, { copy: isCopy });
+    const moveRes = this.store.moveOrSwapCell(fromKey, toKey, { copy: isCopy });
+    if (!moveRes.committed) {
+      if (moveRes.error) showToast(moveRes.error, 'error', 5500);
+      return;
+    }
     const toPos = parseCellKey(toKey);
     this.selectCell(toPos.row, toPos.col);
   }
@@ -986,6 +991,21 @@ export class SpriteSheetBuilderApp {
       }
     }
 
+    // Pre-check post-paste mask & manifest budgets before overwrite dialog so rejected pastes never mutate state
+    const simCells = { ...this.store.project.cells };
+    for (const item of plan) {
+      const clean = deepClone(item.cell);
+      const norm = normalizeCellMask(clean.mask);
+      if (norm) clean.mask = norm;
+      else delete clean.mask;
+      simCells[cellKey(item.row, item.col)] = clean;
+    }
+    const preBudget = checkProjectMaskBudgets({ ...this.store.project, cells: simCells });
+    if (!preBudget.ok) {
+      showToast(preBudget.message, 'error', 5500);
+      return;
+    }
+
     const overwriteCount = plan.filter((p) => Boolean(this.store.project.cells[cellKey(p.row, p.col)])).length;
     if (overwriteCount > 0 || outOfBounds > 0 || plan.length > 1) {
       const details = [];
@@ -1005,7 +1025,7 @@ export class SpriteSheetBuilderApp {
 
     const pasteRes = this.store.pasteCells(plan);
     if (!pasteRes.committed) {
-      showToast('Không thể dán vì dữ liệu nguồn không còn hợp lệ.', 'error');
+      showToast(pasteRes.error || 'Không thể dán vì dữ liệu nguồn không còn hợp lệ.', 'error', 5500);
       return;
     }
     showToast(`Đã dán ${plan.length} ô.`, 'ok');
@@ -1580,7 +1600,11 @@ export class SpriteSheetBuilderApp {
           }
         }
         if (!dest) { showToast('Không còn ô trống phía sau để nhân bản.', 'warn'); return; }
-        this.store.moveOrSwapCell(target.key, cellKey(dest.row, dest.col), { copy: true });
+        const dupRes = this.store.moveOrSwapCell(target.key, cellKey(dest.row, dest.col), { copy: true });
+        if (!dupRes.committed) {
+          if (dupRes.error) showToast(dupRes.error, 'error', 5500);
+          return;
+        }
         this.selectCell(dest.row, dest.col);
       } else if (action === 'swap') {
         const ok = await this.ensureDraftResolved();

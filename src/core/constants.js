@@ -9,6 +9,7 @@ export const PROJECT_SCHEMA_VERSION_V3 = 3;
 export const SUPPORTED_PROJECT_SCHEMA_VERSIONS = Object.freeze([2, 3]);
 export const ATLAS_FORMAT = 'sprite-sheet-builder-atlas';
 export const ATLAS_SCHEMA_VERSION = 1;
+export const ATLAS_SCHEMA_VERSION_V2 = 2;
 export const PRESET_FORMAT = 'sprite-sheet-builder-preset';
 export const PRESET_SCHEMA_VERSION = 1;
 

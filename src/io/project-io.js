@@ -11,7 +11,7 @@ import {
   deepClone
 } from '../core/constants.js';
 import { inspectImageBytes } from '../core/image-inspect.js';
-import { normalizeCellMask, projectHasMasks } from '../core/mask.js';
+import { normalizeCellMask, projectHasMasks, serializeManifestJsonCompact } from '../core/mask.js';
 import { validateProjectManifest } from '../core/validator.js';
 import { createZip, readZip } from './zip.js';
 
@@ -49,7 +49,7 @@ export async function serializeProjectToSsb(project, getSourceBytes, onProgress 
     throw new Error(`Manifest không hợp lệ khi lưu: ${val.errors[0]}`);
   }
 
-  const manifestJson = JSON.stringify(manifest, null, 2);
+  const manifestJson = serializeManifestJsonCompact(manifest);
   const manifestBytes = textEncoder.encode(manifestJson);
   if (manifestBytes.byteLength > LIMITS.MAX_MANIFEST_BYTES) {
     throw new Error(`Manifest vượt giới hạn ${(LIMITS.MAX_MANIFEST_BYTES / (1024 * 1024)).toFixed(0)} MiB.`);

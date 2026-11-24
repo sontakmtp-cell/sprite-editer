@@ -4,7 +4,7 @@
     "results": {
       "T01": {
         "status": "PASS",
-        "evidence": "Loaded file:// offline in 162 ms, 0 network requests, 0 page errors"
+        "evidence": "Loaded file:// offline in 287 ms, 0 network requests, 0 page errors"
       },
       "T02": {
         "status": "PASS",
@@ -64,7 +64,7 @@
       },
       "T16": {
         "status": "PASS",
-        "evidence": "Saved Test.ssb (6843 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
+        "evidence": "Saved Test.ssb (6690 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
       },
       "T17": {
         "status": "PASS",
@@ -152,7 +152,7 @@
     "results": {
       "T01": {
         "status": "PASS",
-        "evidence": "Loaded file:// offline in 190 ms, 0 network requests, 0 page errors"
+        "evidence": "Loaded file:// offline in 208 ms, 0 network requests, 0 page errors"
       },
       "T02": {
         "status": "PASS",
@@ -212,7 +212,7 @@
       },
       "T16": {
         "status": "PASS",
-        "evidence": "Saved Test.ssb (6841 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
+        "evidence": "Saved Test.ssb (6692 B), reopened cleanly, 100% pixel-exact RGBA match + unused source/anchor/preset preserved"
       },
       "T17": {
         "status": "PASS",
@@ -236,7 +236,7 @@
       },
       "T22": {
         "status": "PASS",
-        "evidence": "73x 1024x1024 imported & exported 1536x2288; LRU cache stayed at 63.2/64.0 Mi px (55 evictions)"
+        "evidence": "73x 1024x1024 imported & exported 1536x2288; LRU cache stayed at 63.2/64.0 Mi px (56 evictions)"
       },
       "T23": {
         "status": "PASS",

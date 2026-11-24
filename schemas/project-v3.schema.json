@@ -150,8 +150,8 @@
                         "minItems": 2,
                         "maxItems": 2,
                         "prefixItems": [
-                          { "type": "number", "minimum": 0 },
-                          { "type": "number", "minimum": 0 }
+                          { "type": "number", "minimum": -64 },
+                          { "type": "number", "minimum": -64 }
                         ],
                         "items": false
                       }

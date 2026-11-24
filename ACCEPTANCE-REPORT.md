@@ -1,7 +1,7 @@
 # Báo cáo nghiệm thu (Acceptance Report) — Sprite Sheet Builder V2.0
 
 **Ngày kiểm thử:** 2026-11-24  
-**Bản build kiểm thử:** `dist/sprite-sheet-builder.html` (`554.961 bytes` / `542,0 KiB`, 22 module, 0 runtime dependency, mục tiêu `< 1 MiB`)
+**Bản build kiểm thử:** `dist/sprite-sheet-builder.html` (`571.757 bytes` / `558,4 KiB`, 22 module, 0 runtime dependency, mục tiêu `< 1 MiB`)
 
 ---
 
@@ -24,13 +24,13 @@
 ## 2. Lệnh chạy kiểm thử đã thực thi
 
 ```bash
-npm run build           # Build dist/sprite-sheet-builder.html (542.0 KiB, 22 modules)
-npm run test:unit       # 19/19 PASS (208 ms, gồm R1, R4 và 5 bộ unit test mask E01–E07)
+npm run build           # Build dist/sprite-sheet-builder.html (558.4 KiB, 22 modules)
+npm run test:unit       # 22/22 PASS (477 ms, gồm R1, R4, 5 bộ mask E01–E07 và 3 bộ PR2-P1/P2)
 npm run test:fixtures   # Sinh bộ fixture tổng hợp gồm e01_strip_12frames_768x64.png
 npm run test:e2e        # Chrome 158: 35/35 PASS (T01–T27 + R1–R9, 0 network req, 0 page errors)
                         # Edge   158: 35/35 PASS (T01–T27 + R1–R9, 0 network req, 0 page errors)
-npm run test:eraser     # Chrome 158: 7/7 PASS (E01–E07 gồm DPR=2, 0 network req, 0 page errors)
-                        # Edge   158: 7/7 PASS (E01–E07 gồm DPR=2, 0 network req, 0 page errors)
+npm run test:eraser     # Chrome 158: 10/10 PASS (E01–E10 gồm DPR=2 & PR2-P1/P2, 0 network req, 0 page errors)
+                        # Edge   158: 10/10 PASS (E01–E10 gồm DPR=2 & PR2-P1/P2, 0 network req, 0 page errors)
 npm run test:perf       # Đo T28 + R6 (chuột thật Playwright + xác minh đổi offset & pixel canvas) trên Chrome 158 & Edge 158
 ```
 
@@ -83,7 +83,7 @@ Kết quả JSON chi tiết được lưu tại:
 
 ---
 
-## 3.1. Ma trận kiểm thử tính năng Tẩy phần thừa theo từng ô (E01–E07)
+## 3.1. Ma trận kiểm thử tính năng Tẩy phần thừa theo từng ô (E01–E10)
 
 | ID | Trạng thái | Loại test | Bằng chứng thực đo (Windows 11 Chrome 158 & Edge 158 qua `file://`) |
 |---|---|---|---|
@@ -91,9 +91,12 @@ Kết quả JSON chi tiết được lưu tại:
 | **E02** | **PASS** | Unit + E2E Pixel | Dùng chung asset `f_0` cho ô `0:0` và ô đối chứng `0:7`; tẩy tâm ô `0:0` → PNG xuất có ô `0:0` bị tẩy (`alpha = 0`), ô `0:7` khớp **0 pixel diff** với ảnh gốc, byte nguồn gốc trong `AssetManager` giữ nguyên từng byte. |
 | **E03** | **PASS** | Unit + E2E Pixel (`DPR=2`) | Chạy trên trình duyệt có `window.devicePixelRatio === 2`, crop gốc khác 0 `(128, 0, 64, 64)`, zoom ảnh `150%`, offset `(12, -8)`, zoom xem `200%`: 1 click đơn tại `(158, 32)` + kéo nhanh 2 sự kiện (`steps=1`, nhảy 26 px nguồn) → đổi transform sau tẩy thành zoom `200%`, offset `(-10, 6)` → vết tẩy vẫn đè đúng pixel nguồn đích, trung điểm nét kéo nhanh `alpha = 0` (0 ngắt quãng), vùng thân không tẩy giữ `alpha = 255`. |
 | **E04** | **PASS** | Unit + E2E Pixel | Fixture `t05_alpha_levels_90x60.png` (dải `alpha = 0 / 128 / 255`): Tẩy rồi Khôi phục qua cả 3 dải → PNG xuất trả đúng `alpha = (0, 128, 255)` không bồi đục hay sơn trắng; kiểm chứng **Hoàn nháp**, **Hủy** giữ nguyên phiên, **Áp dụng** rồi **Undo/Redo** cấp project khôi phục đúng pixel. |
-| **E05** | **PASS** | Unit + E2E Pixel + Metadata | Mẩu thừa ở frame 1 kéo rộng alpha bounds thành `w = 48`: bật Fit Alpha + anchor đáy giữa alpha, tẩy mẩu thừa → bounds cập nhật `w = 32` ngay trước khi bấm Áp dụng; Atlas PNG, Strip PNG, Frame đơn PNG khớp **0 pixel diff** và JSON metadata (`contentBoundsCellPx`, `anchorCellPx`) khớp chính xác. Tẩy sạch toàn bộ ô → Preflight báo `0` lỗi chặn + cảnh báo `MASK_ALL_TRANSPARENT`, xuất atlas thành công với ô 1 trong suốt (`alpha = 0`), vẫn **Khôi phục** và **Bỏ toàn bộ vết tẩy** được bình thường. |
-| **E06** | **PASS** | Unit + E2E Pixel + IDB | Lưu project không mask ra `.ssb` V2; vẽ 3 nét `erase`/`restore`/`erase` giao nhau → lưu `.ssb` V3 (`schemaVersion: 3`), lưu & đọc lại Recovery IndexedDB (3 nét khớp), đóng và mở lại `.ssb` V3 → PNG xuất trước/sau khớp **100% từng pixel**. Mở `.ssb` V2 cũ vẫn đọc bình thường; `.ssb` V3 sai (tọa độ ngoài nguồn / op lạ / vượt giới hạn) và V2 chứa `mask` bị từ chối trước khi thay phiên đang mở. |
+| **E05** | **PASS** | Unit + E2E Pixel + Metadata | Mẩu thừa ở frame 1 kéo rộng alpha bounds thành `w = 48`: bật Fit Alpha + anchor đáy giữa alpha, tẩy mẩu thừa → bounds cập nhật `w = 32` ngay trước khi bấm Áp dụng; Atlas PNG, Strip PNG, Frame đơn PNG khớp **0 pixel diff**; JSON V1 mặc định tuân thủ schema gốc (`anchorCellPx` sau tẩy, không thêm trường lạ) và JSON V2 (`includeContentBounds`) khớp chính xác `contentBoundsCellPx`. Tẩy sạch toàn bộ ô → Preflight báo `0` lỗi chặn + cảnh báo `MASK_ALL_TRANSPARENT`, xuất atlas thành công với ô 1 trong suốt (`alpha = 0`), vẫn **Khôi phục** và **Bỏ toàn bộ vết tẩy** được bình thường. |
+| **E06** | **PASS** | Unit + E2E Pixel + IDB | Lưu project không mask ra `.ssb` V2; vẽ 3 nét `erase`/`restore`/`erase` giao nhau → lưu `.ssb` V3 (`schemaVersion: 3`), lưu & đọc lại Recovery IndexedDB (3 nét khớp), đóng và mở lại `.ssb` V3 → PNG xuất trước/sau khớp **100% từng pixel**. Mở `.ssb` V2 cũ vẫn đọc bình thường; `.ssb` V3 sai (tọa độ ngoài biên `[-radius, dim+radius]` / op lạ / vượt giới hạn) và V2 chứa `mask` bị từ chối trước khi thay phiên đang mở. |
 | **E07** | **PASS** | Unit + E2E Pixel | Copy/Paste và Hoán đổi ô mang vết tẩy theo; Dán căn chỉnh giữ nguyên không dán vết tẩy; Thay ảnh mới bắt đầu không có mask; Sửa vùng cắt (`10,10,44,44`) giữ nét trong hệ tọa độ nguồn và chỉ hiện phần giao không kéo giãn; kiểm chứng Draft guard khi chuyển ô có nét tẩy chưa áp dụng và `pointercancel` giải phóng `brushState` sạch; chạy lại toàn bộ 35/35 E2E cũ (`file://`) với `0` network requests và `0` page errors. |
+| **E08** | **PASS** | Unit + E2E + IDB | **PR2-P1 (Ngân sách sau thao tác & Manifest compact):** Dán ô 500 nét sang 16 ô đích (tổng `8.500 > 8.192` nét) bị từ chối gọn trước khi commit, state/revision/Undo stack không đổi; dán sang 15 ô (`8.000 ≤ 8.192`) thành công và qua Save/Open `.ssb` + IndexedDB Recovery; project `117.760` điểm xuất `manifest.json` compact chỉ **`0,87 MiB`** (`< 8 MiB`), mở lại & Recovery thành công. |
+| **E09** | **PASS** | Unit + E2E Pixel | **PR2-P2 (Cọ sát mép & Cọ 1 px ổn định):** Ảnh `64×64` trong ô `64×96` (`y=16..80`), click chuột thật tại `(32, 8)` với cọ `20 px` (`radius=10`) chỉ tẩy đúng 2 hàng `[16, 17]` (không kéo tâm cọ vào trong thành 10 hàng); cọ `1 px` trên pixel mép phải `x=63` của vùng crop `64×64` giữ nguyên tại nguồn `x=63` (không nhảy sang `x=64`) khi mở rộng crop `64 → 80`. |
+| **E10** | **PASS** | Unit + E2E Pixel + Schema | **PR2-P2 (Bounds sau clip & Tương thích Atlas V1/V2):** Ảnh `64×64` dịch `+24 px` trong ô `64×64` → PNG bbox `(24, 0, 40, 64)` khớp tuyệt đối với JSON V2 `contentBoundsCellPx`; dịch hẳn ngoài ô (`+100 px`) trả `null`; JSON V1 mặc định khớp nghiêm ngặt toàn bộ khóa/kiểu của `schemas/atlas-v1.schema.json` nguyên bản (không chứa `contentBoundsCellPx`). |
 
 ---
 
@@ -130,8 +133,8 @@ Vì môi trường agent chạy Playwright headless, các thao tác mức hệ �
 
 ## 6. Trạng thái Definition of Done
 
-- [x] Có file HTML phát hành độc lập [dist/sprite-sheet-builder.html](file:///h:/AI/pet/sprite-sheet-builder/dist/sprite-sheet-builder.html) (`542,0 KiB`), chạy offline thật qua `file://`, không nút giả, không chức năng bắt buộc để TODO.
+- [x] Có file HTML phát hành độc lập [dist/sprite-sheet-builder.html](file:///h:/AI/pet/sprite-sheet-builder/dist/sprite-sheet-builder.html) (`558,4 KiB`), chạy offline thật qua `file://`, không nút giả, không chức năng bắt buộc để TODO.
 - [x] Nhập được 73 frame preset Hatch Pet V2, tách atlas/strip, căn chỉnh hàng loạt, tẩy/khôi phục phần thừa theo từng ô, preview animation và xuất đúng `1536 × 2288` với 15 ô dư `alpha = 0` (đã xác minh pixel trên cả Chrome 158 & Edge 158).
 - [x] Lưu project `.ssb` (V2 khi không mask, V3 khi có mask), đóng/reset và mở lại, chỉnh tiếp được với ảnh nguồn và thông số còn nguyên; pixel RGBA xuất trước/sau khớp 100%.
-- [x] Toàn bộ 19/19 unit test + 35/35 E2E regression test + 7/7 Eraser E2E test trên Chrome 158 và Edge 158 + benchmark T28 đạt; 0 lỗi blocker/critical; các mục manual mức OS Explorer chưa chạy được liệt kê minh bạch ở mục 5.
-- [x] Đầy đủ mã nguồn (`src/`), JSON Schema (`schemas/` gồm `project-v3.schema.json`), fixture 12 frame & test (`tests/`), tài liệu (`README.md`, `PROJECT-FORMAT.md`, `IMPLEMENTATION-NOTES.md`, `THIRD-PARTY-LICENSES.md`, `ACCEPTANCE-REPORT.md`).
+- [x] Toàn bộ 22/22 unit test + 35/35 E2E regression test + 10/10 Eraser E2E test trên Chrome 158 và Edge 158 + benchmark T28 đạt; 0 lỗi blocker/critical; các mục manual mức OS Explorer chưa chạy được liệt kê minh bạch ở mục 5.
+- [x] Đầy đủ mã nguồn (`src/`), JSON Schema (`schemas/` gồm `project-v3.schema.json` và `atlas-v2.schema.json`, giữ nguyên `atlas-v1.schema.json`), fixture 12 frame & test (`tests/`), tài liệu (`README.md`, `PROJECT-FORMAT.md`, `IMPLEMENTATION-NOTES.md`, `THIRD-PARTY-LICENSES.md`, `ACCEPTANCE-REPORT.md`).

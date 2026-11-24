@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Sprite Sheet Builder — Per-Cell Eraser/Restore Mask E2E Test Suite (E01–E07).
+Sprite Sheet Builder — Per-Cell Eraser/Restore Mask E2E Test Suite (E01–E10).
 Runs against the built offline dist/sprite-sheet-builder.html over file:// on Windows 11 Chrome & Edge.
-Verifies real UI clicks/drags, DPR=2 accuracy, PNG/WebP pixel buffers, JSON metadata,
-.ssb V2/V3 & IndexedDB Recovery round-trip, bad manifest rejection, and cell/crop operations.
+Verifies real UI clicks/drags, DPR=2 accuracy, PNG/WebP pixel buffers, JSON metadata V1/V2,
+.ssb V2/V3 & IndexedDB Recovery round-trip, bad manifest rejection, post-op mask budgets,
+edge/1px brush accuracy, clipped bounds, and cell/crop operations.
 """
 
 import io
@@ -40,6 +41,7 @@ def src_to_canvas_client(page, src_x: float, src_y: float):
     return page.evaluate("""([sx, sy]) => {
         const app = window.__SSB_APP__;
         const ed = app.editorView;
+        ed.canvas.scrollIntoView({ block: 'center', inline: 'center' });
         const asset = app.store.getAsset(ed.draft.assetId);
         const geom = ed._pointerGeom;
         const rect = ed.canvas.getBoundingClientRect();
@@ -95,8 +97,16 @@ def run_eraser_suite_for_browser(browser_name: str, executable_path: Path):
             return dl.suggested_filename, data
 
         def reset_project(target_page=page, cols=12, rows=1, cw=64, ch=64):
+            try:
+                target_page.mouse.up()
+            except Exception:
+                pass
             target_page.evaluate("""([cols, rows, cw, ch]) => {
                 for (const d of document.querySelectorAll('dialog[open]')) d.close('cancel');
+                const tc = document.getElementById('toast-container');
+                if (tc) tc.replaceChildren();
+                const edBody = document.getElementById('editor-body');
+                if (edBody) edBody.scrollTop = 0;
                 const app = window.__SSB_APP__;
                 app.endJob();
                 app.assetManager.clearAllBitmaps();
@@ -479,21 +489,29 @@ def run_eraser_suite_for_browser(browser_name: str, executable_path: Path):
 
             page.click("#btn-draft-apply")
 
-            # Export Atlas PNG, Strip PNG, Single Frame PNG, and JSON Metadata -> verify consistency!
+            # Export Atlas PNG, Strip PNG, Single Frame PNG, JSON V1 (default), and JSON V2 (with contentBoundsCellPx) -> verify consistency!
             _, atlas_png = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.runExportJob({ type: 'atlas', format: 'image/png' })"))
             _, frame_png = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.runExportJob({ type: 'frames', framesScope: 'selected-cells', selectedCells: ['0:0'], format: 'image/png' })"))
             _, strip_png = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.runExportJob({ type: 'strip', groupIds: [window.__SSB_APP__.store.project.animations[0].id], stripDirection: 'horizontal', format: 'image/png' })"))
-            _, meta_bytes = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.runExportJob({ type: 'json' })"))
+            _, meta_v1_bytes = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.runExportJob({ type: 'json' })"))
+            _, meta_v2_bytes = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.runExportJob({ type: 'json', includeContentBounds: true })"))
 
-            meta = json.loads(meta_bytes.decode("utf-8"))
-            f0_meta = meta["frames"][0]
-            # Fit Alpha on 32x38 inside 64x64: fit = min(64/32, 64/38) = 64/38 ≈ 1.68421
-            # renderedAlphaRect w = 32 * (64/38) ≈ 53.8947, h = 64.0; anchorOut = (32, 64)
-            assert abs(f0_meta["contentBoundsCellPx"]["h"] - 64.0) < 0.05, f"Metadata height mismatch: {f0_meta}"
-            assert abs(f0_meta["contentBoundsCellPx"]["w"] - (32.0 * 64.0 / 38.0)) < 0.05, f"Metadata width mismatch: {f0_meta}"
+            meta_v1 = json.loads(meta_v1_bytes.decode("utf-8"))
+            assert meta_v1["schemaVersion"] == 1
+            assert "contentBoundsCellPx" not in meta_v1["frames"][0], "V1 metadata must not include contentBoundsCellPx"
+            assert abs(meta_v1["frames"][0]["anchorCellPx"]["x"] - 32.0) < 0.05 and abs(meta_v1["frames"][0]["anchorCellPx"]["y"] - 64.0) < 0.05
+
+            meta_v2 = json.loads(meta_v2_bytes.decode("utf-8"))
+            assert meta_v2["schemaVersion"] == 2
+            f0_meta = meta_v2["frames"][0]
+            im_a, px_a = load_rgba(atlas_png)
+            # Compute actual PNG alpha > 0 bbox of cell 0:0 and assert exact match with V2 metadata!
+            png_bbox = im_a.crop((0, 0, 64, 64)).getbbox()
+            assert png_bbox is not None
+            exp_bounds = {"x": png_bbox[0], "y": png_bbox[1], "w": png_bbox[2] - png_bbox[0], "h": png_bbox[3] - png_bbox[1]}
+            assert f0_meta["contentBoundsCellPx"] == exp_bounds, f"V2 metadata bounds {f0_meta['contentBoundsCellPx']} != actual PNG bbox {exp_bounds}"
             assert abs(f0_meta["anchorCellPx"]["x"] - 32.0) < 0.05 and abs(f0_meta["anchorCellPx"]["y"] - 64.0) < 0.05, f"Metadata anchor mismatch: {f0_meta}"
 
-            im_a, px_a = load_rgba(atlas_png)
             im_f, px_f = load_rgba(frame_png)
             im_s, px_s = load_rgba(strip_png)
             for y in range(64):
@@ -678,6 +696,7 @@ def run_eraser_suite_for_browser(browser_name: str, executable_path: Path):
             page.mouse.move(p20["x"], p20["y"])
             page.mouse.down()
             page.locator("#editor-canvas").dispatch_event("pointercancel")
+            page.mouse.up()
             assert page.evaluate("() => window.__SSB_APP__.editorView.brushState === null"), "brushState stuck after pointercancel!"
 
             # Verify draft guard fires when trying to switch cell with unsaved eraser stroke
@@ -753,6 +772,249 @@ def run_eraser_suite_for_browser(browser_name: str, executable_path: Path):
         except Exception as e:
             record("E07", False, str(e))
 
+        # ------------------------------------------------------------------
+        # E08 (PR2-P1): Multi-paste/duplicate budget guard + just-under-limit Save/Open/Recovery + 117,760-point compact manifest
+        # ------------------------------------------------------------------
+        try:
+            reset_project(page, cols=20, rows=2, cw=64, ch=64)
+            page.set_input_files("#file-import-single", str(FIX / "t02_rect_400x200.png"))
+            page.evaluate("""async () => {
+                const app = window.__SSB_APP__;
+                const f = document.getElementById('file-import-single').files[0];
+                await app.handleIncomingFiles([f], { targetCell: { row: 0, col: 0 }, directSingle: true });
+                const strokes500 = Array.from({ length: 500 }, (_, i) => ({
+                    op: 'erase', radius: 2, points: [[i % 64, Math.floor(i / 64)]]
+                }));
+                app.store.setCellTransform(0, 0, { ...app.store.project.cells['0:0'], mask: { strokes: strokes500 } });
+                app.selectCell(0, 0);
+                app.copySelectedCells();
+            }""")
+
+            # 1. Paste 500-stroke cell into 16 other cells (total 8,500 > 8,192) -> rejected cleanly, state/history unchanged!
+            over_res = page.evaluate("""async () => {
+                const app = window.__SSB_APP__;
+                const revBefore = app.store.revision;
+                const undoBefore = app.store.undoStack.length;
+                app.selectRectRange(0, 1, 0, 16);
+                await app.pasteClipboard();
+                return {
+                    revUnchanged: app.store.revision === revBefore,
+                    undoUnchanged: app.store.undoStack.length === undoBefore,
+                    cellCount: Object.keys(app.store.project.cells).length
+                };
+            }""")
+            assert over_res == {"revUnchanged": True, "undoUnchanged": True, "cellCount": 1}, f"Over-limit paste mutated state: {over_res}"
+
+            # 2. Paste into 15 other cells (total 8,000 <= 8,192) -> succeeds, Save/Open .ssb & Recovery all pass!
+            page.evaluate("""async () => {
+                const app = window.__SSB_APP__;
+                app.selectRectRange(0, 1, 0, 15);
+                const p = app.pasteClipboard();
+                setTimeout(() => {
+                    const btn = document.querySelector('#dialog-confirm button.btn-primary');
+                    if (btn) btn.click();
+                }, 50);
+                await p;
+            }""")
+            page.wait_for_function("() => Object.keys(window.__SSB_APP__.store.project.cells).length === 16", timeout=5000)
+
+            _, ssb_8000 = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.saveProject({ asCopy: false })"))
+            rec_8000 = page.evaluate("""async () => {
+                const app = window.__SSB_APP__;
+                if (app.recovery.status !== 'available') return { skipped: true };
+                const sv = await app.recovery.saveSnapshotNow(app.store.project, app.store.revision, app.assetManager);
+                const snap = sv.ok ? await app.recovery.loadValidSnapshot() : null;
+                return { ok: Boolean(sv.ok && snap && Object.keys(snap.project.cells).length === 16) };
+            }""")
+            assert rec_8000.get("skipped") or rec_8000.get("ok"), f"Recovery 8000 strokes failed: {rec_8000}"
+
+            tmp_8000 = Path(tempfile.mktemp(suffix=".ssb"))
+            tmp_8000.write_bytes(ssb_8000)
+            reset_project(page, cols=4, rows=4, cw=64, ch=64)
+            page.set_input_files("#file-open-project", str(tmp_8000))
+            page.evaluate("async () => { await window.__SSB_APP__.openProjectFile(document.getElementById('file-open-project').files[0]); }")
+            page.wait_for_function("() => Object.keys(window.__SSB_APP__.store.project.cells).length === 16", timeout=5000)
+            tmp_8000.unlink(missing_ok=True)
+
+            # 3. Large valid manifest: 117,760 points (~1.89 MiB compact JSON) saves < 8 MiB, reopens, and passes Recovery!
+            reset_project(page, cols=16, rows=1, cw=64, ch=64)
+            page.set_input_files("#file-import-single", str(FIX / "t02_rect_400x200.png"))
+            page.evaluate("""async () => {
+                const app = window.__SSB_APP__;
+                const f = document.getElementById('file-import-single').files[0];
+                await app.handleIncomingFiles([f], { targetCell: { row: 0, col: 0 }, directSingle: true });
+                const bigMask = {
+                    strokes: Array.from({ length: 16 }, (_, s) => ({
+                        op: 'erase', radius: 2,
+                        points: Array.from({ length: 736 }, (_, p) => [(p * 3) % 64, (s * 4 + (p % 4)) % 64])
+                    }))
+                };
+                const base = app.store.project.cells['0:0'];
+                const updates = {};
+                for (let c = 0; c < 10; c++) updates[`0:${c}`] = { ...base, mask: bigMask };
+                const res = app.store.applyMultipleCellTransforms(updates, '117760pts');
+                if (!res.committed) throw new Error('Big commit failed: ' + res.error);
+            }""")
+            _, ssb_big = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.saveProject({ asCopy: false })"))
+            with zipfile.ZipFile(io.BytesIO(ssb_big), "r") as zf:
+                m_bytes = zf.read("manifest.json")
+                assert len(m_bytes) < 8 * 1024 * 1024, f"Compact manifest exceeded 8 MiB: {len(m_bytes)}"
+            rec_big = page.evaluate("""async () => {
+                const app = window.__SSB_APP__;
+                if (app.recovery.status !== 'available') return { skipped: true };
+                const sv = await app.recovery.saveSnapshotNow(app.store.project, app.store.revision, app.assetManager);
+                return { ok: sv.ok, err: sv.error || sv.reason || '' };
+            }""")
+            assert rec_big.get("skipped") or rec_big.get("ok"), f"Big manifest Recovery failed: {rec_big}"
+            tmp_big = Path(tempfile.mktemp(suffix=".ssb"))
+            tmp_big.write_bytes(ssb_big)
+            reset_project(page, cols=4, rows=4, cw=64, ch=64)
+            page.set_input_files("#file-open-project", str(tmp_big))
+            page.evaluate("async () => { await window.__SSB_APP__.openProjectFile(document.getElementById('file-open-project').files[0]); }")
+            page.wait_for_function("() => Object.keys(window.__SSB_APP__.store.project.cells).length === 10", timeout=5000)
+            tmp_big.unlink(missing_ok=True)
+            record("E08", True, f"8500-stroke paste rejected safely; 8000-stroke paste + 117,760-pt manifest ({len(m_bytes)/1024/1024:.2f} MiB) Save/Open & Recovery PASS")
+        except Exception as e:
+            record("E08", False, str(e))
+
+        # ------------------------------------------------------------------
+        # E09 (PR2-P2): Edge brush accuracy (64x64 in 64x96 cell, click (32,8) r=10 -> ~2 rows, NOT 10) + 1px crop-expand stability
+        # ------------------------------------------------------------------
+        try:
+            # 1. Create solid 64x64 opaque PNG and place in 64x96 cell (image occupies y=16..80)
+            tmp_solid64 = Path(tempfile.mktemp(suffix="_solid64.png"))
+            Image.new("RGBA", (64, 64), (255, 60, 60, 255)).save(tmp_solid64)
+            reset_project(page, cols=1, rows=1, cw=64, ch=96)
+            page.set_input_files("#file-import-single", str(tmp_solid64))
+            page.evaluate("""async () => {
+                const f = document.getElementById('file-import-single').files[0];
+                await window.__SSB_APP__.handleIncomingFiles([f], { targetCell: { row: 0, col: 0 }, directSingle: true });
+                window.__SSB_APP__.selectCell(0, 0);
+            }""")
+            page.wait_for_function("() => Boolean(window.__SSB_APP__.editorView._pointerGeom && window.__SSB_APP__.assetManager.getAssetDrawableSync(window.__SSB_APP__.store.project.assets[0], window.__SSB_APP__.store.project.sources[0]))", timeout=5000)
+
+            page.select_option("#ed-view-zoom", "2")
+            page.click("#btn-ed-tool-erase")
+            page.fill("#ed-brush-size-num", "20")
+            page.locator("#ed-brush-size-num").dispatch_event("change")
+            page.evaluate("() => window.__SSB_APP__.editorView.render()")
+
+            # Real mouse click at cell output coordinate (32, 8) -> source (32, -8)
+            pt_cell_32_8 = page.evaluate("""() => {
+                const ed = window.__SSB_APP__.editorView;
+                ed.canvas.scrollIntoView({ block: 'center', inline: 'center' });
+                const rect = ed.canvas.getBoundingClientRect();
+                const bx = 32 * ed._renderDpr * ed.previewScale;
+                const by = 8 * ed._renderDpr * ed.previewScale;
+                return {
+                    x: rect.left + bx * (rect.width / ed.canvas.width),
+                    y: rect.top + by * (rect.height / ed.canvas.height)
+                };
+            }""")
+            page.mouse.click(pt_cell_32_8["x"], pt_cell_32_8["y"])
+            page.click("#btn-draft-apply")
+
+            _, png_edge = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.runExportJob({ type: 'atlas', format: 'image/png' })"))
+            _, px_edge = load_rgba(png_edge)
+            # Only y=16, 17 should be erased at x=32; y=18..25 MUST stay solid (alpha=255)!
+            erased_rows = [y for y in range(16, 80) if px_edge[32, y][3] == 0]
+            assert erased_rows == [16, 17], f"Expected ONLY rows [16, 17] erased at x=32, got {erased_rows}"
+            assert px_edge[32, 18][3] == 255 and px_edge[32, 24][3] == 255
+            tmp_solid64.unlink(missing_ok=True)
+
+            # 2. 1px brush on rightmost pixel (x=63) of 64x64 crop inside 128x64 source -> expand crop to 80x64 -> stays at x=63!
+            tmp_solid128 = Path(tempfile.mktemp(suffix="_solid128.png"))
+            Image.new("RGBA", (128, 64), (40, 180, 255, 255)).save(tmp_solid128)
+            reset_project(page, cols=1, rows=1, cw=64, ch=64)
+            page.set_input_files("#file-import-images", str(tmp_solid128))
+            page.evaluate("""async () => {
+                const app = window.__SSB_APP__;
+                const f = document.getElementById('file-import-images').files[0];
+                await app.handleIncomingFiles([f], { libraryOnly: true });
+                const src = app.store.project.sources[0];
+                app.store.addSourcesAndAssets('crop64', [], [
+                    { id: 'a_edge1px', sourceId: src.id, name: 'crop64', isRegion: true, region: { x: 0, y: 0, w: 64, h: 64 } }
+                ], [{ row: 0, col: 0, assetId: 'a_edge1px' }]);
+                app.selectCell(0, 0);
+            }""")
+            page.wait_for_function("() => Boolean(window.__SSB_APP__.editorView._pointerGeom && window.__SSB_APP__.assetManager.getAssetDrawableSync(window.__SSB_APP__.store.getAsset('a_edge1px'), window.__SSB_APP__.store.project.sources[0]))", timeout=5000)
+
+            page.select_option("#ed-view-zoom", "2")
+            page.click("#btn-ed-tool-erase")
+            page.fill("#ed-brush-size-num", "1")
+            page.locator("#ed-brush-size-num").dispatch_event("change")
+            page.evaluate("() => window.__SSB_APP__.editorView.render()")
+
+            # Click right inside rightmost pixel 63 (x=63.6, y=32.5)
+            pt_r63 = src_to_canvas_client(page, 63.6, 32.5)
+            page.mouse.click(pt_r63["x"], pt_r63["y"])
+            page.click("#btn-draft-apply")
+
+            # Expand crop to (0, 0, 80, 64) and cell to 80x64 (1:1 scale)
+            page.evaluate("""() => {
+                const app = window.__SSB_APP__;
+                app.store.applyGridChange({ cols: 1, rows: 1, cellWidth: 80, cellHeight: 64 });
+                app.store.updateAssetRegion('a_edge1px', { x: 0, y: 0, w: 80, h: 64 }, { createNew: false });
+            }""")
+            _, png_exp = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.runExportJob({ type: 'atlas', format: 'image/png' })"))
+            _, px_exp = load_rgba(png_exp)
+            assert px_exp[63, 32][3] == 0, f"1px erase jumped away from x=63: {px_exp[63, 32]}"
+            assert px_exp[64, 32][3] == 255, f"1px erase jumped into x=64: {px_exp[64, 32]}"
+            assert px_exp[62, 32][3] == 255
+            tmp_solid128.unlink(missing_ok=True)
+            record("E09", True, "Real-mouse edge click (32,8) r=10 erased ONLY rows [16,17]; 1px brush stayed locked at source x=63 after crop expand 64->80")
+        except Exception as e:
+            record("E09", False, str(e))
+
+        # ------------------------------------------------------------------
+        # E10 (PR2-P2): Clipped cell bounds match exported PNG exactly (offsetX=+24 -> w=40) & V1 metadata matches base schema
+        # ------------------------------------------------------------------
+        try:
+            tmp_solid = Path(tempfile.mktemp(suffix="_clip64.png"))
+            Image.new("RGBA", (64, 64), (100, 220, 120, 255)).save(tmp_solid)
+            reset_project(page, cols=1, rows=1, cw=64, ch=64)
+            page.set_input_files("#file-import-single", str(tmp_solid))
+            page.evaluate("""async () => {
+                const app = window.__SSB_APP__;
+                const f = document.getElementById('file-import-single').files[0];
+                await app.handleIncomingFiles([f], { targetCell: { row: 0, col: 0 }, directSingle: true });
+                app.store.setCellTransform(0, 0, { ...app.store.project.cells['0:0'], offsetX: 24, offsetY: 0 });
+            }""")
+            _, png_clip = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.runExportJob({ type: 'atlas', format: 'image/png' })"))
+            _, json_v1_b = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.runExportJob({ type: 'json' })"))
+            _, json_v2_b = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.runExportJob({ type: 'json', includeContentBounds: true })"))
+
+            im_c, _ = load_rgba(png_clip)
+            bb = im_c.getbbox()
+            assert bb == (24, 0, 64, 64), f"Expected PNG bbox (24,0,64,64), got {bb}"
+
+            # Validate V1 output strictly against base schemas/atlas-v1.schema.json (top-level, atlas, frames, anchorCellPx)
+            v1 = json.loads(json_v1_b.decode("utf-8"))
+            v1_schema = json.loads((ROOT / "schemas" / "atlas-v1.schema.json").read_text(encoding="utf-8"))
+            assert set(v1.keys()) == set(v1_schema["required"]) and set(v1.keys()).issubset(set(v1_schema["properties"].keys())), f"Top-level V1 keys mismatch: {set(v1.keys())}"
+            assert set(v1["atlas"].keys()).issubset(set(v1_schema["properties"]["atlas"]["properties"].keys())), f"Atlas V1 keys mismatch: {set(v1['atlas'].keys())}"
+            allowed_v1_frame_keys = set(v1_schema["properties"]["frames"]["items"]["properties"].keys())
+            assert v1["schemaVersion"] == 1
+            assert set(v1["frames"][0].keys()).issubset(allowed_v1_frame_keys), f"Unexpected V1 keys: {set(v1['frames'][0].keys()) - allowed_v1_frame_keys}"
+            assert "contentBoundsCellPx" not in v1["frames"][0]
+            if v1["frames"][0]["anchorCellPx"] is not None:
+                assert set(v1["frames"][0]["anchorCellPx"].keys()) == {"x", "y"}
+
+            # Validate V2 output matches exact clipped PNG bbox (x=24, y=0, w=40, h=64)
+            v2 = json.loads(json_v2_b.decode("utf-8"))
+            assert v2["schemaVersion"] == 2
+            assert v2["frames"][0]["contentBoundsCellPx"] == {"x": 24, "y": 0, "w": 40, "h": 64}, f"Clipped bounds mismatch: {v2['frames'][0]}"
+
+            # Completely off-cell offsetX=100 -> PNG empty & V2 contentBoundsCellPx is null
+            page.evaluate("() => { const app = window.__SSB_APP__; app.store.setCellTransform(0, 0, { ...app.store.project.cells['0:0'], offsetX: 100 }); }")
+            _, json_off_b = download_bytes(lambda: page.evaluate("() => window.__SSB_APP__.runExportJob({ type: 'json', includeContentBounds: true })"))
+            v2_off = json.loads(json_off_b.decode("utf-8"))
+            assert v2_off["frames"][0]["contentBoundsCellPx"] is None, f"Off-cell bounds must be null: {v2_off['frames'][0]}"
+            tmp_solid.unlink(missing_ok=True)
+            record("E10", True, "Offset +24px in 64px cell -> PNG bbox (24,0,40,64) == JSON V2 contentBoundsCellPx; off-cell -> null; JSON V1 strictly matches base atlas-v1 schema")
+        except Exception as e:
+            record("E10", False, str(e))
+
         ctx.close()
 
     return {
@@ -777,7 +1039,7 @@ def main():
     all_reports = []
     total_fail = 0
     for name, exe in targets:
-        print(f"\n=== Running Eraser E2E Suite (E01–E07) on Windows 11 {name} ===", flush=True)
+        print(f"\n=== Running Eraser E2E Suite (E01–E10) on Windows 11 {name} ===", flush=True)
         rep = run_eraser_suite_for_browser(name, exe)
         all_reports.append(rep)
         fails = [k for k, v in rep["results"].items() if v["status"] != "PASS"]

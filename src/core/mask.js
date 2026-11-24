@@ -1,13 +1,24 @@
 /**
  * Sprite Sheet Builder — Per-Cell Vector Eraser/Restore Mask Engine (Schema V3).
  * Pure logic, zero DOM dependency, deterministic hard-round brush rasterization,
- * polyline simplification, strict allowlist validation, and resource budgeting.
+ * polyline simplification, Liang-Barsky clipping, strict allowlist validation, and resource budgeting.
  */
 
 import { LIMITS } from './constants.js';
 
 const ALLOWED_STROKE_OPS = new Set(['erase', 'restore']);
 const maskSigMemo = new WeakMap();
+const utf8Encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+
+export function measureUtf8Bytes(str) {
+  if (typeof str !== 'string' || str.length === 0) return 0;
+  if (utf8Encoder) return utf8Encoder.encode(str).byteLength;
+  return str.length;
+}
+
+export function serializeManifestJsonCompact(manifest) {
+  return JSON.stringify(manifest);
+}
 
 export function hasMaskStrokes(mask) {
   return Boolean(mask && Array.isArray(mask.strokes) && mask.strokes.length > 0);
@@ -93,6 +104,50 @@ export function getMaskSignature(mask) {
 }
 
 /**
+ * Liang-Barsky segment clipping against axis-aligned rectangle [minX, maxX] x [minY, maxY].
+ * Returns `{ x0, y0, x1, y1, clippedStart, clippedEnd }` or `null` if segment lies completely outside.
+ */
+export function clipSegmentToRect(ax, ay, bx, by, minX, minY, maxX, maxY) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  let t0 = 0;
+  let t1 = 1;
+
+  const clip = (p, q) => {
+    if (Math.abs(p) <= 1e-12) {
+      return q >= 0;
+    }
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+    return true;
+  };
+
+  if (
+    !clip(-dx, ax - minX) ||
+    !clip(dx, maxX - ax) ||
+    !clip(-dy, ay - minY) ||
+    !clip(dy, maxY - ay)
+  ) {
+    return null;
+  }
+
+  return {
+    x0: ax + t0 * dx,
+    y0: ay + t0 * dy,
+    x1: ax + t1 * dx,
+    y1: ay + t1 * dy,
+    clippedStart: t0 > 1e-9,
+    clippedEnd: t1 < 1 - 1e-9
+  };
+}
+
+/**
  * Perpendicular distance squared from point P to segment AB.
  */
 function pointToSegmentDistSq(px, py, ax, ay, bx, by) {
@@ -165,19 +220,16 @@ export function simplifyStrokePoints(points, epsilon = 0.25) {
 }
 
 /**
- * Compute serialized JSON UTF-8 byte length of a mask object.
+ * Compute compact serialized JSON UTF-8 byte length of a mask object
+ * (matches exact compact format written into `.ssb` manifest.json).
  */
 export function measureMaskJsonBytes(mask) {
   if (!hasMaskStrokes(mask)) return 0;
-  const str = JSON.stringify(mask);
-  if (typeof TextEncoder !== 'undefined') {
-    return new TextEncoder().encode(str).byteLength;
-  }
-  return str.length;
+  return measureUtf8Bytes(JSON.stringify(mask));
 }
 
 /**
- * Compute stroke count, point count, and serialized byte size of a single cell mask.
+ * Compute stroke count, point count, and compact serialized byte size of a single cell mask.
  */
 export function estimateMaskStats(mask) {
   if (!hasMaskStrokes(mask)) {
@@ -215,8 +267,97 @@ export function estimateProjectMaskUsage(project, excludeCellKey = null) {
 }
 
 /**
- * Check whether a candidate cell mask fits within per-stroke, per-cell, and project-wide budgets.
+ * Validate ALL mask budgets and total serialized manifest size on an entire post-operation project state.
+ * Used before committing multi-paste, duplicate, Ctrl-drag copy, cell transform, and sync edits.
  * Never silently truncates; returns explicit Vietnamese error when any limit is exceeded.
+ */
+export function checkProjectMaskBudgets(project) {
+  if (!project || !project.cells) return { ok: true, strokes: 0, points: 0, maskBytes: 0, manifestBytes: 0 };
+
+  let totalStrokes = 0;
+  let totalPoints = 0;
+  let totalMaskBytes = 0;
+
+  for (const key of Object.keys(project.cells)) {
+    const cell = project.cells[key];
+    if (!hasCellMask(cell)) continue;
+    const strokes = cell.mask.strokes;
+
+    if (strokes.length > LIMITS.MAX_MASK_STROKES_PER_CELL) {
+      return {
+        ok: false,
+        code: 'CELL_MAX_STROKES',
+        message: `Ô "${key}" vượt giới hạn tối đa ${LIMITS.MAX_MASK_STROKES_PER_CELL} nét tẩy/khôi phục.`
+      };
+    }
+
+    let cellPoints = 0;
+    for (let i = 0; i < strokes.length; i++) {
+      const pts = strokes[i].points;
+      if (!Array.isArray(pts) || pts.length > LIMITS.MAX_MASK_POINTS_PER_STROKE) {
+        return {
+          ok: false,
+          code: 'STROKE_MAX_POINTS',
+          message: `Nét vẽ vượt giới hạn tối đa ${LIMITS.MAX_MASK_POINTS_PER_STROKE} điểm trên một nét.`
+        };
+      }
+      cellPoints += pts.length;
+    }
+
+    if (cellPoints > LIMITS.MAX_MASK_POINTS_PER_CELL) {
+      return {
+        ok: false,
+        code: 'CELL_MAX_POINTS',
+        message: `Ô "${key}" vượt giới hạn tối đa ${LIMITS.MAX_MASK_POINTS_PER_CELL.toLocaleString('vi-VN')} điểm mặt nạ.`
+      };
+    }
+
+    totalStrokes += strokes.length;
+    totalPoints += cellPoints;
+    totalMaskBytes += measureMaskJsonBytes(cell.mask);
+  }
+
+  if (totalStrokes > LIMITS.MAX_PROJECT_MASK_STROKES) {
+    return {
+      ok: false,
+      code: 'PROJECT_MAX_STROKES',
+      message: `Thao tác sẽ nâng tổng số nét mặt nạ lên ${totalStrokes.toLocaleString('vi-VN')}, vượt giới hạn ${LIMITS.MAX_PROJECT_MASK_STROKES.toLocaleString('vi-VN')} nét của project.`
+    };
+  }
+  if (totalPoints > LIMITS.MAX_PROJECT_MASK_POINTS) {
+    return {
+      ok: false,
+      code: 'PROJECT_MAX_POINTS',
+      message: `Thao tác sẽ nâng tổng số điểm mặt nạ lên ${totalPoints.toLocaleString('vi-VN')}, vượt giới hạn ${LIMITS.MAX_PROJECT_MASK_POINTS.toLocaleString('vi-VN')} điểm của project.`
+    };
+  }
+  if (totalMaskBytes > LIMITS.MAX_PROJECT_MASK_BYTES) {
+    return {
+      ok: false,
+      code: 'PROJECT_MAX_BYTES',
+      message: `Tổng dung lượng dữ liệu mặt nạ (${(totalMaskBytes / (1024 * 1024)).toFixed(2)} MiB) vượt giới hạn ${(LIMITS.MAX_PROJECT_MASK_BYTES / (1024 * 1024)).toFixed(0)} MiB của project.`
+    };
+  }
+
+  // Synchronize with exact compact JSON manifest size written to `.ssb` (<= 8 MiB)
+  if (totalStrokes > 0) {
+    const manifestBytes = measureUtf8Bytes(serializeManifestJsonCompact(project));
+    if (manifestBytes > LIMITS.MAX_MANIFEST_BYTES) {
+      return {
+        ok: false,
+        code: 'MANIFEST_MAX_BYTES',
+        message: `Tổng dung lượng manifest project (${(manifestBytes / (1024 * 1024)).toFixed(2)} MiB) vượt giới hạn ${(LIMITS.MAX_MANIFEST_BYTES / (1024 * 1024)).toFixed(0)} MiB khi lưu .ssb.`
+      };
+    }
+    return { ok: true, strokes: totalStrokes, points: totalPoints, maskBytes: totalMaskBytes, manifestBytes };
+  }
+
+  return { ok: true, strokes: 0, points: 0, maskBytes: 0, manifestBytes: 0 };
+}
+
+/**
+ * Check whether a candidate cell mask fits within per-stroke, per-cell, project-wide,
+ * and serialized manifest budgets.
  */
 export function checkMaskBudget(project, activeCellKey, candidateMask) {
   if (!hasMaskStrokes(candidateMask)) return { ok: true };
@@ -275,6 +416,21 @@ export function checkMaskBudget(project, activeCellKey, candidateMask) {
     };
   }
 
+  // Verify exact post-change compact manifest fits inside MAX_MANIFEST_BYTES
+  if (project && project.cells && activeCellKey) {
+    const prevCell = project.cells[activeCellKey];
+    const simulatedCells = { ...project.cells };
+    simulatedCells[activeCellKey] = prevCell ? { ...prevCell, mask: candidateMask } : { mask: candidateMask };
+    const manifestBytes = measureUtf8Bytes(serializeManifestJsonCompact({ ...project, cells: simulatedCells }));
+    if (manifestBytes > LIMITS.MAX_MANIFEST_BYTES) {
+      return {
+        ok: false,
+        code: 'MANIFEST_MAX_BYTES',
+        message: `Tổng dung lượng manifest project (${(manifestBytes / (1024 * 1024)).toFixed(2)} MiB) vượt giới hạn ${(LIMITS.MAX_MANIFEST_BYTES / (1024 * 1024)).toFixed(0)} MiB.`
+      };
+    }
+  }
+
   return {
     ok: true,
     cellStrokes: candidateMask.strokes.length,
@@ -285,8 +441,9 @@ export function checkMaskBudget(project, activeCellKey, candidateMask) {
 
 /**
  * Strict allowlist validator for a single cell's `mask` object in Schema V3.
- * Checks types, allowed keys, finite numbers, radius range, source coordinate bounds,
- * per-stroke & per-cell limits, and returns stats for project-wide budget accumulation.
+ * Checks types, allowed keys, finite numbers, radius range, source coordinate envelope
+ * (`[-radius, source.width + radius]` x `[-radius, source.height + radius]`, allowing
+ * accurate edge brushing without clamping the brush center inward), per-stroke & per-cell limits.
  */
 export function validateCellMaskStrict(mask, source, cellPath) {
   const errors = [];
@@ -361,6 +518,12 @@ export function validateCellMaskStrict(mask, source, cellPath) {
       break;
     }
 
+    const r = st.radius;
+    const minCoordX = -r;
+    const maxCoordX = maxW + r;
+    const minCoordY = -r;
+    const maxCoordY = maxH + r;
+
     for (let j = 0; j < st.points.length; j++) {
       const pt = st.points[j];
       if (!Array.isArray(pt) || pt.length !== 2) {
@@ -376,8 +539,8 @@ export function validateCellMaskStrict(mask, source, cellPath) {
         errors.push(`${stPath}.points[${j}] chứa số không hữu hạn.`);
         break;
       }
-      if (x < 0 || y < 0 || x > maxW || y > maxH) {
-        errors.push(`${stPath}.points[${j}] (${x}, ${y}) nằm ngoài phạm vi ảnh nguồn (${maxW}×${maxH}).`);
+      if (x < minCoordX || y < minCoordY || x > maxCoordX || y > maxCoordY) {
+        errors.push(`${stPath}.points[${j}] (${x}, ${y}) nằm ngoài phạm vi cọ trên ảnh nguồn (${maxW}×${maxH}, bán kính ${r}).`);
         break;
       }
     }
@@ -399,33 +562,27 @@ export function validateCellMaskStrict(mask, source, cellPath) {
  * into a local crop alpha mask buffer `maskAlpha` (Uint8Array of length width * height).
  * - `op === 'erase'` writes 0 (transparent)
  * - `op === 'restore'` writes 255 (preserve exact original alpha)
- * Handles 1-point clicks, 1px brushes (radius=0.5), and fast long drags with zero gaps.
+ * - Strictly source-coordinate invariant: crop boundaries only clip pixels outside `[regionX, regionX+width) x [regionY, regionY+height)`
+ *   and NEVER pull the brush center inward or snap edge pixels differently when crop changes!
  */
 export function rasterizeStrokeSegmentIntoAlpha(maskAlpha, width, height, regionX, regionY, op, radius, p0, p1) {
   if (!maskAlpha || width <= 0 || height <= 0 || !p0 || !p1) return;
   const val = op === 'restore' ? 255 : 0;
 
-  // Convert source pixel coords into crop-local coords
-  const ax = p0[0] - regionX;
-  const ay = p0[1] - regionY;
-  const bx = p1[0] - regionX;
-  const by = p1[1] - regionY;
-
-  // Stamp exact pixel(s) for very small brushes (radius < 0.75, e.g. 1px diameter = 0.5 radius)
-  // so clicking or dragging a 1px brush never misses due to sub-pixel center distance > 0.5.
+  // For very small brushes (radius < 0.75, e.g. 1px diameter = 0.5 radius):
+  // Step directly in EXIF-oriented source pixel coordinates so `Math.floor(srcX)` is 100% invariant
+  // under crop resize/shift (never snaps x === width to width - 1).
   if (radius < 0.75) {
-    const dx = bx - ax;
-    const dy = by - ay;
-    const dist = Math.hypot(dx, dy);
+    const sdx = p1[0] - p0[0];
+    const sdy = p1[1] - p0[1];
+    const dist = Math.hypot(sdx, sdy);
     const steps = Math.max(1, Math.ceil(dist * 2));
     for (let s = 0; s <= steps; s++) {
       const t = steps === 0 ? 0 : s / steps;
-      const sx = ax + dx * t;
-      const sy = ay + dy * t;
-      let px = Math.floor(sx);
-      let py = Math.floor(sy);
-      if (px === width && sx === width) px = width - 1;
-      if (py === height && sy === height) py = height - 1;
+      const srcPx = Math.floor(p0[0] + sdx * t);
+      const srcPy = Math.floor(p0[1] + sdy * t);
+      const px = srcPx - regionX;
+      const py = srcPy - regionY;
       if (px >= 0 && px < width && py >= 0 && py < height) {
         maskAlpha[py * width + px] = val;
       }
@@ -433,7 +590,13 @@ export function rasterizeStrokeSegmentIntoAlpha(maskAlpha, width, height, region
     if (radius <= 0.5) return;
   }
 
-  // Tight bounding box intersected with crop [0, width-1] x [0, height-1]
+  // Convert source pixel coords into crop-local coords (pure translation, zero clamping!)
+  const ax = p0[0] - regionX;
+  const ay = p0[1] - regionY;
+  const bx = p1[0] - regionX;
+  const by = p1[1] - regionY;
+
+  // Tight bounding box clipped to crop [0, width-1] x [0, height-1]
   const minX = Math.max(0, Math.floor(Math.min(ax, bx) - radius));
   const maxX = Math.min(width - 1, Math.ceil(Math.max(ax, bx) + radius));
   const minY = Math.max(0, Math.floor(Math.min(ay, by) - radius));
@@ -446,7 +609,7 @@ export function rasterizeStrokeSegmentIntoAlpha(maskAlpha, width, height, region
   const lenSq = dx * dx + dy * dy;
 
   if (lenSq <= 1e-12) {
-    // 1-point circle
+    // 1-point hard circle
     for (let py = minY; py <= maxY; py++) {
       const cy = py + 0.5 - ay;
       const cySq = cy * cy;

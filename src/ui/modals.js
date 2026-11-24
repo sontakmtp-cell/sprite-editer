@@ -1256,6 +1256,7 @@ export class ModalsController {
       includeStrips: false,
       includeFrames: false,
       includeGuidesAndAnchors: true,
+      includeContentBounds: false,
       warningsConfirmed: false,
       largeExportConfirmed: false,
       report: null
@@ -1394,6 +1395,14 @@ export class ModalsController {
             onChange: (e) => { state.includeGuidesAndAnchors = e.target.checked; }
           }),
           'Xuất kèm đường gióng (normalized) và anchor (pixel ô) trong JSON metadata'
+        ]));
+        body.appendChild(el('label', { className: 'form-row' }, [
+          el('input', {
+            type: 'checkbox',
+            checked: state.includeContentBounds,
+            onChange: (e) => { state.includeContentBounds = e.target.checked; }
+          }),
+          'Xuất kèm contentBoundsCellPx thực tế sau clip/tẩy (Atlas Metadata V2; mặc định V1 tương thích cũ)'
         ]));
       }
 

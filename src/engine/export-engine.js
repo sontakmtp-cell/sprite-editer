@@ -8,6 +8,7 @@
 import {
   ATLAS_FORMAT,
   ATLAS_SCHEMA_VERSION,
+  ATLAS_SCHEMA_VERSION_V2,
   LIMITS,
   cellKey,
   parseCellKey,
@@ -16,7 +17,7 @@ import {
   pad3,
   mimeToExt
 } from '../core/constants.js';
-import { computeCellGeometry } from '../core/geometry.js';
+import { computeCellGeometry, computeAlphaBoundsFromRGBA } from '../core/geometry.js';
 import { hasCellMask } from '../core/mask.js';
 import { verifyEncodedSignature } from '../core/image-inspect.js';
 import { getFrameDurationMs } from '../core/animation-clock.js';
@@ -262,71 +263,112 @@ export async function renderSingleCellToCanvas(project, assetManager, row, col) 
 }
 
 /**
- * Build Generic Atlas JSON Metadata V1 (Spec §11.3, schemas/atlas-v1.schema.json).
+ * Shared internal Atlas Metadata builder for Schema V1 (strictly compatible with original
+ * schemas/atlas-v1.schema.json) and Schema V2 (adds clip-accurate `contentBoundsCellPx`
+ * measured directly from the rendered & cell-clipped exported RGBA pixels).
  */
-export async function buildAtlasMetadataV1(project, assetManager, { imageFilename = null, includeGuidesAndAnchors = true } = {}) {
+async function _buildAtlasMetadata(
+  project,
+  assetManager,
+  {
+    imageFilename = null,
+    includeGuidesAndAnchors = true,
+    schemaVersion = ATLAS_SCHEMA_VERSION,
+    includeContentBounds = false
+  } = {}
+) {
   const { cols, rows, cellWidth, cellHeight } = project.grid;
+  const emitBounds = schemaVersion === ATLAS_SCHEMA_VERSION_V2 && includeContentBounds;
   const frames = [];
 
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const key = cellKey(r, c);
-      const cell = project.cells[key];
-      const frameObj = {
-        id: `r${r}c${c}`,
-        row: r,
-        col: c,
-        x: c * cellWidth,
-        y: r * cellHeight,
-        w: cellWidth,
-        h: cellHeight,
-        empty: !cell
-      };
+  let scratch = null;
+  if (emitBounds) {
+    scratch = createOutputCanvas(cellWidth, cellHeight);
+  }
 
-      if (includeGuidesAndAnchors && cell) {
-        const asset = project.assets.find((a) => a.id === cell.assetId);
-        const source = asset ? project.sources.find((s) => s.id === asset.sourceId) : null;
-        if (asset && source) {
-          const info = await assetManager.analyzeCellPixels(asset, source, cell.alphaThreshold, cell.mask);
-          const alphaBounds = info?.alphaBounds || null;
-          const erasedEmpty = hasCellMask(cell) && (info?.allTransparent || (cell.fitMode === 'alpha' && !alphaBounds));
-          if (erasedEmpty) {
-            frameObj.anchorCellPx = null;
-            frameObj.contentBoundsCellPx = null;
-          } else {
-            const geom = computeCellGeometry({
-              cellWidth,
-              cellHeight,
-              row: r,
-              col: c,
-              region: asset.region,
-              transform: cell,
-              alphaBounds
-            });
-            if (geom && Number.isFinite(geom.anchorOutX) && Number.isFinite(geom.anchorOutY)) {
-              frameObj.anchorCellPx = {
-                x: geom.anchorOutX,
-                y: geom.anchorOutY
-              };
-            } else {
-              frameObj.anchorCellPx = null;
+  try {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const key = cellKey(r, c);
+        const cell = project.cells[key];
+        const frameObj = {
+          id: `r${r}c${c}`,
+          row: r,
+          col: c,
+          x: c * cellWidth,
+          y: r * cellHeight,
+          w: cellWidth,
+          h: cellHeight,
+          empty: !cell
+        };
+
+        if ((includeGuidesAndAnchors || emitBounds) && cell) {
+          const asset = project.assets.find((a) => a.id === cell.assetId);
+          const source = asset ? project.sources.find((s) => s.id === asset.sourceId) : null;
+          if (asset && source) {
+            const info = await assetManager.analyzeCellPixels(asset, source, cell.alphaThreshold, cell.mask);
+            const alphaBounds = info?.alphaBounds || null;
+            const erasedEmpty = hasCellMask(cell) && (info?.allTransparent || (cell.fitMode === 'alpha' && !alphaBounds));
+
+            if (includeGuidesAndAnchors) {
+              if (erasedEmpty) {
+                frameObj.anchorCellPx = null;
+              } else {
+                const geom = computeCellGeometry({
+                  cellWidth,
+                  cellHeight,
+                  row: r,
+                  col: c,
+                  region: asset.region,
+                  transform: cell,
+                  alphaBounds
+                });
+                frameObj.anchorCellPx =
+                  geom && Number.isFinite(geom.anchorOutX) && Number.isFinite(geom.anchorOutY)
+                    ? { x: geom.anchorOutX, y: geom.anchorOutY }
+                    : null;
+              }
             }
-            if (geom?.renderedAlphaRect) {
-              frameObj.contentBoundsCellPx = {
-                x: geom.renderedAlphaRect.x,
-                y: geom.renderedAlphaRect.y,
-                w: geom.renderedAlphaRect.w,
-                h: geom.renderedAlphaRect.h
-              };
-            } else {
-              frameObj.contentBoundsCellPx = null;
+
+            if (emitBounds) {
+              if (erasedEmpty) {
+                frameObj.contentBoundsCellPx = null;
+              } else {
+                const drawable = await assetManager.getCellDrawable(asset, source, cell.mask);
+                if (drawable && scratch) {
+                  scratch.ctx.clearRect(0, 0, cellWidth, cellHeight);
+                  drawCellOnContext(scratch.ctx, {
+                    cellWidth,
+                    cellHeight,
+                    originX: 0,
+                    originY: 0,
+                    region: asset.region,
+                    transform: cell,
+                    alphaBounds,
+                    drawable,
+                    smoothing: project.settings.smoothing
+                  });
+                  const imgData = scratch.ctx.getImageData(0, 0, cellWidth, cellHeight);
+                  // Measure exact alpha > 0 bounds from the actually exported, clipped cell bitmap
+                  const clippedBounds = computeAlphaBoundsFromRGBA(imgData.data, cellWidth, cellHeight, 0);
+                  frameObj.contentBoundsCellPx = clippedBounds
+                    ? { x: clippedBounds.x, y: clippedBounds.y, w: clippedBounds.w, h: clippedBounds.h }
+                    : null;
+                } else {
+                  frameObj.contentBoundsCellPx = null;
+                }
+              }
             }
           }
+        } else if (emitBounds) {
+          frameObj.contentBoundsCellPx = null;
         }
-      }
 
-      frames.push(frameObj);
+        frames.push(frameObj);
+      }
     }
+  } finally {
+    if (scratch) disposeCanvas(scratch.canvas);
   }
 
   const animations = project.animations.map((anim) => {
@@ -361,12 +403,37 @@ export async function buildAtlasMetadataV1(project, assetManager, { imageFilenam
 
   return {
     format: ATLAS_FORMAT,
-    schemaVersion: ATLAS_SCHEMA_VERSION,
+    schemaVersion,
     image: imageFilename,
     atlas: atlasObj,
     frames,
     animations
   };
+}
+
+/**
+ * Build Generic Atlas JSON Metadata V1 (Spec §11.3, strictly conforms to schemas/atlas-v1.schema.json).
+ */
+export async function buildAtlasMetadataV1(project, assetManager, { imageFilename = null, includeGuidesAndAnchors = true } = {}) {
+  return _buildAtlasMetadata(project, assetManager, {
+    imageFilename,
+    includeGuidesAndAnchors,
+    schemaVersion: ATLAS_SCHEMA_VERSION,
+    includeContentBounds: false
+  });
+}
+
+/**
+ * Build Atlas JSON Metadata V2 (conforms to schemas/atlas-v2.schema.json, includes clip-accurate
+ * `contentBoundsCellPx` measured directly from exported cell pixels).
+ */
+export async function buildAtlasMetadataV2(project, assetManager, { imageFilename = null, includeGuidesAndAnchors = true } = {}) {
+  return _buildAtlasMetadata(project, assetManager, {
+    imageFilename,
+    includeGuidesAndAnchors,
+    schemaVersion: ATLAS_SCHEMA_VERSION_V2,
+    includeContentBounds: true
+  });
 }
 
 /**
@@ -387,9 +454,12 @@ export async function executeExportJob(project, assetManager, config, { signal =
   const quality = config.webpQuality ?? project.settings.webpQuality ?? 0.92;
   const type = config.type || 'atlas';
 
+  const useAtlasMetaV2 = config.metadataSchemaVersion === ATLAS_SCHEMA_VERSION_V2 || Boolean(config.includeContentBounds);
+
   if (type === 'json') {
     if (onProgress) onProgress(1, 1, 'Đang tạo JSON metadata...');
-    const meta = await buildAtlasMetadataV1(project, assetManager, {
+    const metaBuilder = useAtlasMetaV2 ? buildAtlasMetadataV2 : buildAtlasMetadataV1;
+    const meta = await metaBuilder(project, assetManager, {
       imageFilename: null,
       includeGuidesAndAnchors: config.includeGuidesAndAnchors !== false
     });
@@ -534,7 +604,8 @@ export async function executeExportJob(project, assetManager, config, { signal =
     if (includeJson) {
       if (signal?.aborted) throw new Error('CANCELLED');
       if (onProgress) onProgress(++doneSteps, totalSteps, 'Đang tạo JSON metadata...');
-      const meta = await buildAtlasMetadataV1(project, assetManager, {
+      const metaBuilder = useAtlasMetaV2 ? buildAtlasMetadataV2 : buildAtlasMetadataV1;
+      const meta = await metaBuilder(project, assetManager, {
         imageFilename: atlasFilename,
         includeGuidesAndAnchors: config.includeGuidesAndAnchors !== false
       });

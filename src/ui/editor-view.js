@@ -11,6 +11,7 @@ import {
   normalizeCellMask,
   getMaskSignature,
   roundMaskCoord,
+  clipSegmentToRect,
   simplifyStrokePoints,
   checkMaskBudget,
   rasterizeMaskAlpha,
@@ -487,17 +488,13 @@ export class EditorView {
     const localSrcY = (outY - locked.geom.localY) / locked.geom.scale;
     const rawSrcX = locked.region.x + localSrcX;
     const rawSrcY = locked.region.y + localSrcY;
-    const clampedX = Math.max(locked.region.x, Math.min(locked.region.x + locked.region.w, rawSrcX));
-    const clampedY = Math.max(locked.region.y, Math.min(locked.region.y + locked.region.h, rawSrcY));
     return {
       outX,
       outY,
       localSrcX,
       localSrcY,
       rawSrcX,
-      rawSrcY,
-      srcX: roundMaskCoord(clampedX),
-      srcY: roundMaskCoord(clampedY)
+      rawSrcY
     };
   }
 
@@ -837,15 +834,29 @@ export class EditorView {
     };
 
     const radius = this.brushSize / 2;
+    const isOnePxBrush = radius <= 0.5;
     const hit = this._clientToSourcePoint(e.clientX, e.clientY, locked);
     this.hoverOutPos = { x: hit.outX, y: hit.outY };
 
-    // Ignore clicks completely outside brush reach of the asset crop
-    if (
-      hit.localSrcX < -radius || hit.localSrcX > locked.region.w + radius ||
-      hit.localSrcY < -radius || hit.localSrcY > locked.region.h + radius
-    ) {
-      return;
+    // Ignore clicks completely outside brush reach of the asset crop (never pull center inward!)
+    let p0;
+    if (isOnePxBrush) {
+      if (
+        hit.localSrcX < 0 || hit.localSrcX >= locked.region.w ||
+        hit.localSrcY < 0 || hit.localSrcY >= locked.region.h
+      ) {
+        return;
+      }
+      // Lock 1px brush to exact source pixel center so rounding & crop edits never shift pixels
+      p0 = [Math.floor(hit.rawSrcX) + 0.5, Math.floor(hit.rawSrcY) + 0.5];
+    } else {
+      if (
+        hit.localSrcX < -radius || hit.localSrcX > locked.region.w + radius ||
+        hit.localSrcY < -radius || hit.localSrcY > locked.region.h + radius
+      ) {
+        return;
+      }
+      p0 = [roundMaskCoord(hit.rawSrcX), roundMaskCoord(hit.rawSrcY)];
     }
 
     const op = this.toolMode === 'restore' ? 'restore' : 'erase';
@@ -853,7 +864,7 @@ export class EditorView {
 
     // Pre-check stroke count / project budget before starting (never silently drop/truncate!)
     const preCandidate = {
-      strokes: [...existingStrokes, { op, radius, points: [[hit.srcX, hit.srcY]] }]
+      strokes: [...existingStrokes, { op, radius, points: [p0] }]
     };
     const preBudget = checkMaskBudget(this.app.store.project, this.cellKey, preCandidate);
     if (!preBudget.ok) {
@@ -869,7 +880,6 @@ export class EditorView {
     const initAlpha = rasterizeMaskAlpha(rw, rh, rx, ry, existingStrokes);
     this._liveMaskAlpha.set(initAlpha);
 
-    const p0 = [hit.srcX, hit.srcY];
     rasterizeStrokeSegmentIntoAlpha(this._liveMaskAlpha, rw, rh, rx, ry, op, radius, p0, p0);
     this._liveDirty = true;
 
@@ -877,7 +887,10 @@ export class EditorView {
       pointerId: e.pointerId,
       op,
       radius,
-      points: [p0],
+      isOnePxBrush,
+      subStrokes: [[p0]],
+      lastRaw: [hit.rawSrcX, hit.rawSrcY],
+      exitedReach: false,
       locked,
       baseDrawable,
       limitReached: false
@@ -890,6 +903,46 @@ export class EditorView {
     this.requestRender();
   }
 
+  _appendStrokeSegment(bs, segStart, segEnd, forceNewSubStroke) {
+    const { x: rx, y: ry, w: rw, h: rh } = bs.locked.region;
+    const minDist = bs.isOnePxBrush ? 0.5 : Math.max(0.25, bs.radius * 0.12);
+    const minDistSq = minDist * minDist;
+
+    let activePts = bs.subStrokes[bs.subStrokes.length - 1];
+    if (forceNewSubStroke) {
+      activePts = [segStart];
+      bs.subStrokes.push(activePts);
+      rasterizeStrokeSegmentIntoAlpha(this._liveMaskAlpha, rw, rh, rx, ry, bs.op, bs.radius, segStart, segStart);
+      this._liveDirty = true;
+    }
+
+    const prev = activePts[activePts.length - 1];
+    const dx = segEnd[0] - prev[0];
+    const dy = segEnd[1] - prev[1];
+    if (dx * dx + dy * dy < minDistSq) return;
+
+    if (activePts.length >= LIMITS.MAX_MASK_POINTS_PER_STROKE) {
+      const eps = bs.isOnePxBrush ? 0.1 : Math.min(0.35, Math.max(0.1, bs.radius * 0.04));
+      const simplified = simplifyStrokePoints(activePts, eps);
+      if (simplified.length < LIMITS.MAX_MASK_POINTS_PER_STROKE) {
+        bs.subStrokes[bs.subStrokes.length - 1] = simplified;
+        activePts = simplified;
+      } else {
+        bs.limitReached = true;
+        showToast(
+          `Nét vẽ đã đạt giới hạn tối đa ${LIMITS.MAX_MASK_POINTS_PER_STROKE} điểm — hãy nhả chuột để kết thúc nét.`,
+          'warn',
+          4500
+        );
+        return;
+      }
+    }
+
+    activePts.push(segEnd);
+    rasterizeStrokeSegmentIntoAlpha(this._liveMaskAlpha, rw, rh, rx, ry, bs.op, bs.radius, prev, segEnd);
+    this._liveDirty = true;
+  }
+
   _continueBrushStroke(e) {
     const bs = this.brushState;
     if (!bs) return;
@@ -898,42 +951,42 @@ export class EditorView {
     const coalesced = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
     const events = coalesced && coalesced.length > 0 ? coalesced : [e];
     const { x: rx, y: ry, w: rw, h: rh } = bs.locked.region;
-    const minDist = Math.max(0.25, bs.radius * 0.12);
-    const minDistSq = minDist * minDist;
+    const r = bs.radius;
+    const clipMinX = bs.isOnePxBrush ? rx : rx - r;
+    const clipMinY = bs.isOnePxBrush ? ry : ry - r;
+    const clipMaxX = bs.isOnePxBrush ? rx + rw - 1e-4 : rx + rw + r;
+    const clipMaxY = bs.isOnePxBrush ? ry + rh - 1e-4 : ry + rh + r;
 
     for (let i = 0; i < events.length; i++) {
       const ev = events[i];
       const hit = this._clientToSourcePoint(ev.clientX, ev.clientY, bs.locked);
       this.hoverOutPos = { x: hit.outX, y: hit.outY };
 
+      const prevRaw = bs.lastRaw;
+      const curRaw = [hit.rawSrcX, hit.rawSrcY];
+      bs.lastRaw = curRaw;
+
       if (bs.limitReached) continue;
 
-      const prev = bs.points[bs.points.length - 1];
-      const dx = hit.srcX - prev[0];
-      const dy = hit.srcY - prev[1];
-      if (dx * dx + dy * dy < minDistSq) continue;
-
-      if (bs.points.length >= LIMITS.MAX_MASK_POINTS_PER_STROKE) {
-        // Attempt gentle sub-pixel polyline simplification once before refusing additional points
-        const eps = Math.min(0.35, Math.max(0.1, bs.radius * 0.04));
-        const simplified = simplifyStrokePoints(bs.points, eps);
-        if (simplified.length < LIMITS.MAX_MASK_POINTS_PER_STROKE) {
-          bs.points = simplified;
-        } else {
-          bs.limitReached = true;
-          showToast(
-            `Nét vẽ đã đạt giới hạn tối đa ${LIMITS.MAX_MASK_POINTS_PER_STROKE} điểm — hãy nhả chuột để kết thúc nét.`,
-            'warn',
-            4500
-          );
-          continue;
-        }
+      const clipped = clipSegmentToRect(
+        prevRaw[0], prevRaw[1], curRaw[0], curRaw[1],
+        clipMinX, clipMinY, clipMaxX, clipMaxY
+      );
+      if (!clipped) {
+        bs.exitedReach = true;
+        continue;
       }
 
-      const nextPt = [hit.srcX, hit.srcY];
-      bs.points.push(nextPt);
-      rasterizeStrokeSegmentIntoAlpha(this._liveMaskAlpha, rw, rh, rx, ry, bs.op, bs.radius, prev, nextPt);
-      this._liveDirty = true;
+      const segStart = bs.isOnePxBrush
+        ? [Math.floor(clipped.x0) + 0.5, Math.floor(clipped.y0) + 0.5]
+        : [roundMaskCoord(clipped.x0), roundMaskCoord(clipped.y0)];
+      const segEnd = bs.isOnePxBrush
+        ? [Math.floor(clipped.x1) + 0.5, Math.floor(clipped.y1) + 0.5]
+        : [roundMaskCoord(clipped.x1), roundMaskCoord(clipped.y1)];
+
+      const needsSplit = bs.exitedReach;
+      bs.exitedReach = clipped.clippedEnd;
+      this._appendStrokeSegment(bs, segStart, segEnd, needsSplit);
     }
 
     this.requestRender();
@@ -942,6 +995,12 @@ export class EditorView {
   _finishBrushStroke(e = null) {
     const bs = this.brushState;
     if (!bs) return;
+
+    // Capture exact final endpoint via the same un-clamped reach clipping logic before closing stroke
+    if (e && typeof e.clientX === 'number' && typeof e.clientY === 'number' && !bs.limitReached) {
+      this._continueBrushStroke(e);
+    }
+
     this.brushState = null;
 
     if (bs.pointerId !== undefined) {
@@ -954,33 +1013,20 @@ export class EditorView {
 
     if (!this.draft) return;
 
-    // Capture exact final endpoint if pointerup arrived at a slightly different spot
-    if (e && typeof e.clientX === 'number' && typeof e.clientY === 'number' && !bs.limitReached) {
-      const hit = this._clientToSourcePoint(e.clientX, e.clientY, bs.locked);
-      this.hoverOutPos = { x: hit.outX, y: hit.outY };
-      const prev = bs.points[bs.points.length - 1];
-      if ((hit.srcX !== prev[0] || hit.srcY !== prev[1]) && bs.points.length < LIMITS.MAX_MASK_POINTS_PER_STROKE) {
-        const nextPt = [hit.srcX, hit.srcY];
-        bs.points.push(nextPt);
-        const { x: rx, y: ry, w: rw, h: rh } = bs.locked.region;
-        rasterizeStrokeSegmentIntoAlpha(this._liveMaskAlpha, rw, rh, rx, ry, bs.op, bs.radius, prev, nextPt);
-        this._liveDirty = true;
+    const newStrokes = [];
+    for (const rawPts of bs.subStrokes) {
+      if (!rawPts || rawPts.length === 0) continue;
+      let finalPoints = rawPts;
+      if (finalPoints.length > 32) {
+        const eps = bs.isOnePxBrush ? 0.1 : Math.min(0.35, Math.max(0.1, bs.radius * 0.04));
+        finalPoints = simplifyStrokePoints(finalPoints, eps);
       }
-    }
-
-    // Sub-pixel polyline simplification for long strokes (keeps exact endpoints)
-    let finalPoints = bs.points;
-    if (finalPoints.length > 32) {
-      const eps = Math.min(0.35, Math.max(0.1, bs.radius * 0.04));
-      finalPoints = simplifyStrokePoints(finalPoints, eps);
+      newStrokes.push({ op: bs.op, radius: bs.radius, points: finalPoints });
     }
 
     const existingStrokes = hasMaskStrokes(this.draft.mask) ? this.draft.mask.strokes : [];
     const candidateMask = {
-      strokes: [
-        ...existingStrokes,
-        { op: bs.op, radius: bs.radius, points: finalPoints }
-      ]
+      strokes: [...existingStrokes, ...newStrokes]
     };
 
     const budget = checkMaskBudget(this.app.store.project, this.cellKey, candidateMask);

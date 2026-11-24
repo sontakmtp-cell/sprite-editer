@@ -1,10 +1,11 @@
 # Định dạng Project `.ssb`, Metadata Atlas & Preset — V2.0
 
-Tài liệu này mô tả đầy đủ kiến trúc file lưu trữ và xuất của **Sprite Sheet Builder**, tương ứng với 4 JSON Schema chính thức nằm trong thư mục `schemas/`:
+Tài liệu này mô tả đầy đủ kiến trúc file lưu trữ và xuất của **Sprite Sheet Builder**, tương ứng với 5 JSON Schema chính thức nằm trong thư mục `schemas/`:
 
 - [project-v2.schema.json](file:///h:/AI/pet/sprite-sheet-builder/schemas/project-v2.schema.json)
 - [project-v3.schema.json](file:///h:/AI/pet/sprite-sheet-builder/schemas/project-v3.schema.json)
 - [atlas-v1.schema.json](file:///h:/AI/pet/sprite-sheet-builder/schemas/atlas-v1.schema.json)
+- [atlas-v2.schema.json](file:///h:/AI/pet/sprite-sheet-builder/schemas/atlas-v2.schema.json)
 - [preset-v1.schema.json](file:///h:/AI/pet/sprite-sheet-builder/schemas/preset-v1.schema.json)
 
 ---
@@ -17,7 +18,7 @@ File `.ssb` là một archive **PKZIP 2.0** độc lập, không chứa đườn
 
 ```text
 <project>.ssb
-├── manifest.json          # JSON UTF-8, nén DEFLATE hoặc STORE, tối đa 8 MiB
+├── manifest.json          # JSON UTF-8 dạng compact (không thụt dòng), nén DEFLATE/STORE, tối đa 8 MiB
 └── sources/
     ├── <sourceId>.png     # Dữ liệu nhị phân gốc nguyên bản (STORE)
     ├── <sourceId>.webp    # Dữ liệu nhị phân gốc nguyên bản (STORE)
@@ -49,9 +50,9 @@ Quy tắc bảo mật và toàn vẹn khi đọc `.ssb`:
   - `offsetX`, `offsetY`: số thực hữu hạn (pixel đầu ra, không làm tròn trung gian).
   - `anchor`: `{ mode: "fit-center" | "alpha-bottom-center" | "custom", x?, y? }` (với `custom`, `x, y` là tọa độ pixel tương đối theo vùng `region` của asset, nằm trong `[0..w] × [0..h]`).
   - `mask` *(chỉ cho phép ở `schemaVersion: 3`, tùy chọn)*: `{ strokes: [{ op: "erase" | "restore", radius, points: [[x, y], ...] }] }`.
-    - Tọa độ `[x, y]` lưu trong **hệ tọa độ pixel của ảnh nguồn đã xoay đúng EXIF** (`0 <= x <= source.width`, `0 <= y <= source.height`, hữu hạn).
+    - Tọa độ `[x, y]` lưu trong **hệ tọa độ pixel của ảnh nguồn đã xoay đúng EXIF**, cho phép tâm cọ nằm ngoài biên ảnh nguồn trong phạm vi `[-radius, source.width + radius] × [-radius, source.height + radius]` (tối thiểu `-64` px) để thao tác sát mép không kéo tâm cọ vào trong; phần hình tròn cọ nằm ngoài vùng crop chỉ bị clip khi rasterize. Với cọ `1 px` (`radius = 0.5`), tọa độ chốt đúng tâm pixel nguồn `[Math.floor(x) + 0.5, Math.floor(y) + 0.5]` để không nhảy pixel khi mở rộng crop.
     - `radius`: bán kính cọ tròn cứng (`0.5 .. 64` px nguồn, tương ứng cỡ cọ `1 .. 128` px).
-    - Giới hạn: tối đa `1024` điểm/nét, `512` nét/ô, `16.384` điểm/ô, tổng `8.192` nét và `131.072` điểm trên toàn project, tổng JSON mặt nạ `≤ 2 MiB`. Không nhúng bitmap base64 vào manifest.
+    - Giới hạn: tối đa `1024` điểm/nét, `512` nét/ô, `16.384` điểm/ô, tổng `8.192` nét và `131.072` điểm trên toàn project, tổng JSON mặt nạ `≤ 2 MiB`, và tổng `manifest.json` compact `≤ 8 MiB`. Mọi giới hạn được kiểm tra trên **toàn bộ trạng thái sau thao tác** trước khi commit (kể cả Dán nhiều ô, Nhân bản, Ctrl-kéo sao chép). Không nhúng bitmap base64 vào manifest.
 - `animations[]`: danh sách nhóm animation (`id`, `name`, `fps` `1..60`, `loopMode`: `"loop" | "once" | "pingpong"`, tùy chọn `guides: { x, y } | null` dạng chuẩn hóa `0..1`, tùy chọn `sizeVarianceThreshold: number | null`, `frames: [{ row, col, durationMs }]` với `durationMs: null` dùng FPS hoặc `10..10000` ms).
 - `settings`: `{ smoothing, guides: { x, y }, defaultAlphaThreshold, webpQuality }`.
 - `customPresets[]`: tối đa 64 preset tùy chỉnh tuân thủ `preset-v1.schema.json`.
@@ -67,16 +68,25 @@ Quy tắc bảo mật và toàn vẹn khi đọc `.ssb`:
 
 ---
 
-## 2. JSON Metadata Atlas (Schema Version 1)
+## 2. JSON Metadata Atlas (Schema Version 1 & Version 2)
 
-Xuất kèm Atlas hoặc độc lập theo chuẩn [atlas-v1.schema.json](file:///h:/AI/pet/sprite-sheet-builder/schemas/atlas-v1.schema.json):
+### 2.1. Schema Version 1 (Mặc định — Tương thích tuyệt đối)
+
+Xuất mặc định kèm Atlas hoặc độc lập theo chuẩn gốc [atlas-v1.schema.json](file:///h:/AI/pet/sprite-sheet-builder/schemas/atlas-v1.schema.json) (`additionalProperties: false` nghiêm ngặt):
 
 - `format`: `"sprite-sheet-builder-atlas"`, `schemaVersion`: `1`.
 - `image`: tên file atlas (ví dụ `"spritesheet_8x11_192x208.png"`) hoặc `null` khi xuất JSON độc lập.
 - `atlas`: `{ width, height, cols, rows, cellWidth, cellHeight, origin: "top-left", indexBase: 0, guidesNormalized?: { x, y } }`.
   - **Đơn vị rõ ràng:** `guidesNormalized` dùng đơn vị chuẩn hóa `[0..1]` theo kích thước ô; tọa độ frame `x, y, w, h` dùng pixel nguyên trên atlas.
-- `frames[]`: chứa đủ `cols × rows` slot kể cả ô trống (`empty: true`), `id: "r{row}c{col}"`, tùy chọn `anchorCellPx: { x, y } | null` và `contentBoundsCellPx: { x, y, w, h } | null` tính theo **pixel trong khung ô** trên dữ liệu **sau khi áp dụng mặt nạ tẩy** (không trộn đơn vị chuẩn hóa).
+- `frames[]`: chứa đủ `cols × rows` slot kể cả ô trống (`empty: true`), `id: "r{row}c{col}"`, tùy chọn `anchorCellPx: { x, y } | null` tính theo **pixel trong khung ô** trên dữ liệu **sau khi áp dụng mặt nạ tẩy** (không thêm trường lạ ngoài V1).
 - `animations[]`: tên nhóm gốc (chưa sanitize), `fps`, `loopMode`, tùy chọn `guidesNormalized`, danh sách `frames: [{ frameId, durationMs }]` trong đó `durationMs` là thời lượng thực tế (`durationMs` riêng hoặc `1000 / fps` không làm tròn gây lệch tích lũy).
+
+### 2.2. Schema Version 2 (Tùy chọn xuất kèm `contentBoundsCellPx`)
+
+Khi người dùng bật tùy chọn **Xuất kèm `contentBoundsCellPx` thực tế sau clip/tẩy (Atlas Metadata V2)** trong hộp thoại Xuất, ứng dụng xuất theo chuẩn [atlas-v2.schema.json](file:///h:/AI/pet/sprite-sheet-builder/schemas/atlas-v2.schema.json):
+
+- `schemaVersion`: `2` (mọi trường khác giữ nguyên cấu trúc như V1).
+- `frames[].contentBoundsCellPx`: `{ x, y, w, h } | null` (số nguyên trong `[0..cellWidth] × [0..cellHeight]`) được tính trực tiếp từ **buffer pixel xuất thực tế sau khi render, áp mặt nạ tẩy và clip đúng vào khung ô `cellWidth × cellHeight`**. Nếu ảnh bị đẩy ra ngoài khung ô hoặc bị tẩy hết phần nhìn thấy, giá trị là `null`.
 
 ---
 

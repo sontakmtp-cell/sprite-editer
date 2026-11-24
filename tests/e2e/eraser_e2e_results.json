@@ -29,6 +29,18 @@
       "E07": {
         "status": "PASS",
         "evidence": "Copy/Swap carry mask; Paste Transform preserves no-mask; Replace clears mask; Crop edit intersects in source coords; draft guard & pointercancel clean; 0 network/page errors"
+      },
+      "E08": {
+        "status": "PASS",
+        "evidence": "8500-stroke paste rejected safely; 8000-stroke paste + 117,760-pt manifest (0.87 MiB) Save/Open & Recovery PASS"
+      },
+      "E09": {
+        "status": "PASS",
+        "evidence": "Real-mouse edge click (32,8) r=10 erased ONLY rows [16,17]; 1px brush stayed locked at source x=63 after crop expand 64->80"
+      },
+      "E10": {
+        "status": "PASS",
+        "evidence": "Offset +24px in 64px cell -> PNG bbox (24,0,40,64) == JSON V2 contentBoundsCellPx; off-cell -> null; JSON V1 strictly matches base atlas-v1 schema"
       }
     },
     "network_requests": [],
@@ -65,6 +77,18 @@
       "E07": {
         "status": "PASS",
         "evidence": "Copy/Swap carry mask; Paste Transform preserves no-mask; Replace clears mask; Crop edit intersects in source coords; draft guard & pointercancel clean; 0 network/page errors"
+      },
+      "E08": {
+        "status": "PASS",
+        "evidence": "8500-stroke paste rejected safely; 8000-stroke paste + 117,760-pt manifest (0.87 MiB) Save/Open & Recovery PASS"
+      },
+      "E09": {
+        "status": "PASS",
+        "evidence": "Real-mouse edge click (32,8) r=10 erased ONLY rows [16,17]; 1px brush stayed locked at source x=63 after crop expand 64->80"
+      },
+      "E10": {
+        "status": "PASS",
+        "evidence": "Offset +24px in 64px cell -> PNG bbox (24,0,40,64) == JSON V2 contentBoundsCellPx; off-cell -> null; JSON V1 strictly matches base atlas-v1 schema"
       }
     },
     "network_requests": [],

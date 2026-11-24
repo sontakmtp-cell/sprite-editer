@@ -55,8 +55,8 @@
   - **Khôi phục**: khôi phục **đúng alpha gốc** (0 / 128 / 255) tại vùng quét mà không sơn trắng hay làm đục nền trong suốt.
   - **Zoom xem** (`Vừa`, `100%`–`400%`): phóng đại khung xem trước để tẩy chi tiết nhỏ (không thay đổi pixel xuất).
   - **Bỏ toàn bộ vết tẩy**: xóa sạch mặt nạ của ô đang chọn (nằm trong bản nháp, có thể Hoàn nháp / Hủy trước khi Áp dụng).
-- **Bảo toàn dữ liệu & phạm vi:** Mặt nạ lưu theo **từng ô** trong tọa độ pixel ảnh nguồn đã xoay EXIF — không sửa byte ảnh nguồn gốc và không ảnh hưởng các ô khác dùng chung cùng asset. Khi đổi X/Y, zoom ảnh, zoom xem hoặc sửa vùng cắt (crop), vết tẩy luôn bám đúng pixel nguồn.
-- **Tương thích Fit Alpha & Xuất:** Sau khi kết thúc nét vẽ, Fit Alpha, anchor theo alpha, preflight và toàn bộ đầu ra (Atlas/Strip/Frame/ZIP/JSON metadata) tự dùng dữ liệu sau tẩy. Nếu tẩy sạch toàn bộ phần nhìn thấy trong ô, preflight hiển thị cảnh báo (không chặn xuất cả atlas), ô đó xuất trong suốt và vẫn có thể **Khôi phục** hoặc **Bỏ toàn bộ vết tẩy**.
+- **Bảo toàn dữ liệu & phạm vi:** Mặt nạ lưu theo **từng ô** trong tọa độ pixel ảnh nguồn đã xoay EXIF — không sửa byte ảnh nguồn gốc và không ảnh hưởng các ô khác dùng chung cùng asset. Khi tẩy sát mép ảnh, tâm cọ bám đúng vị trí con trỏ (chỉ clip phần giao ra ngoài crop, không kéo tâm cọ vào trong); cọ `1 px` bám cố định đúng pixel nguồn kể cả khi mở rộng crop; và các thao tác Dán/Nhân bản/Ctrl-kéo luôn kiểm tra ngân sách mặt nạ toàn project trước khi commit.
+- **Tương thích Fit Alpha & Xuất:** Sau khi kết thúc nét vẽ, Fit Alpha, anchor theo alpha, preflight và toàn bộ đầu ra (Atlas/Strip/Frame/ZIP/JSON metadata) tự dùng dữ liệu sau tẩy. JSON Metadata mặc định giữ chuẩn **Atlas V1** tương thích ngược hoàn toàn; có tùy chọn bật **Atlas Metadata V2** để xuất kèm `contentBoundsCellPx` thực tế sau clip và tẩy. Nếu tẩy sạch toàn bộ phần nhìn thấy trong ô, preflight hiển thị cảnh báo (không chặn xuất cả atlas), ô đó xuất trong suốt và vẫn có thể **Khôi phục** hoặc **Bỏ toàn bộ vết tẩy**.
 - **Quy tắc sao chép:** Di chuyển / Hoán đổi / Sao chép cả ô mang vết tẩy theo; **Dán căn chỉnh** không dán vết tẩy; **Thay ảnh khác** bắt đầu không có vết tẩy.
 - **Tương thích file `.ssb`:** Project không có vết tẩy tiếp tục lưu `schemaVersion: 2`. Project có ít nhất một ô chứa vết tẩy sẽ lưu `schemaVersion: 3` (xem `PROJECT-FORMAT.md`). File V3 có vết tẩy **không mở được trên bản V2.0 cũ**; bản mới vẫn mở bình thường mọi file `.ssb` V2 cũ.
 
@@ -127,7 +127,7 @@ npm run test:fixtures
 # 4. Chạy bộ kiểm thử E2E + đọc pixel trên Chrome & Edge thực tế (T01–T27, R1–R9)
 npm run test:e2e
 
-# 5. Chạy bộ kiểm thử E2E tính năng Tẩy theo từng ô trên Chrome & Edge (E01–E07, gồm DPR=2)
+# 5. Chạy bộ kiểm thử E2E tính năng Tẩy theo từng ô trên Chrome & Edge (E01–E10, gồm DPR=2, budget paste, cọ sát mép/1px, Atlas V1/V2)
 npm run test:eraser
 
 # 6. Chạy đo hiệu năng thực tế (T28, >= 3 lần mỗi kịch bản trên Chrome & Edge)

@@ -21,11 +21,17 @@ import {
   getMaskSignature,
   simplifyStrokePoints,
   checkMaskBudget,
+  checkProjectMaskBudgets,
   rasterizeMaskAlpha,
   applyMaskAlphaToRGBA
 } from '../../src/core/mask.js';
 import { computeAlphaBoundsFromRGBA, isCompletelyTransparentRGBA } from '../../src/core/geometry.js';
-import { validateProjectManifest, validateProjectManifestV2 } from '../../src/core/validator.js';
+import {
+  validateProjectManifest,
+  validateProjectManifestV2,
+  validateAtlasMetadataV1,
+  validateAtlasMetadataV2
+} from '../../src/core/validator.js';
 import { ProjectStore, createDefaultCell } from '../../src/core/store.js';
 import { runPreflight } from '../../src/core/preflight.js';
 import { crc32 } from '../../src/io/zip.js';
@@ -202,8 +208,9 @@ test('E06 Schema V2/V3 validation, strict rejection of invalid/oversized masks, 
   assert.equal(makeBadV3({ strokes: [{ op: 'erase', radius: 65, points: [[10, 10]] }] }).ok, false, 'radius too large');
   assert.equal(makeBadV3({ strokes: [{ op: 'erase', radius: 6, points: [] }] }).ok, false, 'empty points');
   assert.equal(makeBadV3({ strokes: [{ op: 'erase', radius: 6, points: [[Number.NaN, 10]] }] }).ok, false, 'NaN point');
-  assert.equal(makeBadV3({ strokes: [{ op: 'erase', radius: 6, points: [[-1, 10]] }] }).ok, false, 'negative coord');
-  assert.equal(makeBadV3({ strokes: [{ op: 'erase', radius: 6, points: [[300, 10]] }] }).ok, false, 'coord > source.width');
+  assert.equal(makeBadV3({ strokes: [{ op: 'erase', radius: 6, points: [[-7, 10]] }] }).ok, false, 'coord < -radius');
+  assert.equal(makeBadV3({ strokes: [{ op: 'erase', radius: 6, points: [[263, 10]] }] }).ok, false, 'coord > source.width + radius');
+  assert.equal(makeBadV3({ strokes: [{ op: 'erase', radius: 6, points: [[-4, 10]] }] }).ok, true, 'edge brush center within -radius valid');
   assert.equal(makeBadV3({ strokes: [{ op: 'erase', radius: 6, points: [[10, 10]], extra: 1 }] }).ok, false, 'unknown stroke field');
   assert.equal(makeBadV3({ strokes: [], extra: true }).ok, false, 'unknown mask field');
 
@@ -271,4 +278,132 @@ test('E05/E07 Preflight & Store Rules: erased-empty Fit Alpha warns without bloc
   // Editing asset region of a1 keeps cell 0:1's mask strokes in source coords intact
   store.updateAssetRegion('a1', { x: 8, y: 8, w: 48, h: 48 }, { createNew: false });
   assert.deepEqual(store.project.cells['0:1'].mask, mask);
+});
+
+test('PR2-P1: Post-operation mask budget rejects overflowing paste/duplicate/copy; accepts just-under-limit & 117,760-point compact manifest', async () => {
+  const { store, pngBytes } = makeTestProjectWithSource(256, 64);
+  store.applyGridChange({ cols: 20, rows: 2, cellWidth: 64, cellHeight: 64 });
+
+  // Build 1 cell with 500 valid 1-point strokes
+  const strokes500 = Array.from({ length: 500 }, (_, i) => ({
+    op: 'erase',
+    radius: 2,
+    points: [[i % 64, Math.floor(i / 64)]]
+  }));
+  const rSet = store.setCellTransform(0, 0, {
+    ...store.project.cells['0:0'],
+    mask: { strokes: strokes500 }
+  });
+  assert.equal(rSet.committed, true);
+
+  const revBefore = store.revision;
+  const undoLenBefore = store.undoStack.length;
+
+  // 1. Multi-paste into 16 other cells -> total 17 * 500 = 8,500 > 8,192 -> REJECTED without mutating state/history!
+  const cell0 = store.project.cells['0:0'];
+  const plan16 = Array.from({ length: 16 }, (_, i) => ({ row: 0, col: i + 1, cell: cell0 }));
+  const badPaste = store.pasteCells(plan16);
+  assert.equal(badPaste.committed, false);
+  assert.equal(badPaste.code, 'PROJECT_MAX_STROKES');
+  assert.ok(badPaste.error && badPaste.error.includes('8.192') || badPaste.error.includes('8,192') || badPaste.error.includes('8192'));
+  assert.equal(store.revision, revBefore);
+  assert.equal(store.undoStack.length, undoLenBefore);
+  assert.equal(store.project.cells['0:2'], undefined);
+
+  // 2. Multi-paste into 15 other cells -> total 16 * 500 = 8,000 <= 8,192 -> ACCEPTED and saves/reopens cleanly!
+  const plan15 = Array.from({ length: 15 }, (_, i) => ({ row: 0, col: i + 1, cell: cell0 }));
+  const okPaste = store.pasteCells(plan15);
+  assert.equal(okPaste.committed, true);
+  const ssb8000 = await serializeProjectToSsb(store.project, () => pngBytes);
+  const res8000 = await deserializeProjectFromSsb(ssb8000);
+  assert.equal(res8000.ok, true);
+  assert.equal(res8000.project.schemaVersion, PROJECT_SCHEMA_VERSION_V3);
+
+  // 3. Copying one more cell via moveOrSwapCell({ copy: true }) -> 8,500 > 8,192 -> REJECTED!
+  const revAt8000 = store.revision;
+  const badCopy = store.moveOrSwapCell('0:0', '1:0', { copy: true });
+  assert.equal(badCopy.committed, false);
+  assert.equal(badCopy.code, 'PROJECT_MAX_STROKES');
+  assert.equal(store.revision, revAt8000);
+  assert.equal(store.project.cells['1:0'], undefined);
+
+  // 4. Large valid manifest: 117,760 points (~1.89 MB compact mask JSON) must validate & serialize < 8 MiB!
+  const { store: bigStore, pngBytes: bigPng } = makeTestProjectWithSource(256, 64);
+  bigStore.applyGridChange({ cols: 16, rows: 1, cellWidth: 64, cellHeight: 64 });
+  // 10 cells * 16 strokes * 736 points = 117,760 points (each cell = 11,776 <= 16,384; stroke = 736 <= 1,024)
+  const makeBigCellMask = () => ({
+    strokes: Array.from({ length: 16 }, (_, s) => ({
+      op: 'erase',
+      radius: 2,
+      points: Array.from({ length: 736 }, (_, p) => [(p * 3) % 64, (s * 4 + (p % 4)) % 64])
+    }))
+  });
+  const bigMask = makeBigCellMask();
+  const baseCell = bigStore.project.cells['0:0'];
+  const updates = {};
+  for (let c = 0; c < 10; c++) {
+    updates[`0:${c}`] = { ...baseCell, mask: bigMask };
+  }
+  const bigCommit = bigStore.applyMultipleCellTransforms(updates, 'large valid mask');
+  assert.equal(bigCommit.committed, true, `Large valid mask commit failed: ${bigCommit.error}`);
+  const check = checkProjectMaskBudgets(bigStore.project);
+  assert.equal(check.ok, true);
+  assert.equal(check.points, 117760);
+  assert.ok(check.manifestBytes < LIMITS.MAX_MANIFEST_BYTES, `Manifest bytes ${check.manifestBytes} >= 8 MiB`);
+
+  const bigSsb = await serializeProjectToSsb(bigStore.project, () => bigPng);
+  const bigBack = await deserializeProjectFromSsb(bigSsb);
+  assert.equal(bigBack.ok, true, `Large valid manifest deserialize failed: ${bigBack.errors}`);
+});
+
+test('PR2-P2: Edge brush center outside crop clips cleanly (never pulls center inward) & 1px brush stays source-pixel-invariant on crop expand', () => {
+  // 1. Solid 64x64 image (crop 0,0,64,64), brush radius=10 centered at source (32, -8)
+  // Circle bottom is at y = -8 + 10 = +2 -> ONLY rows y=0 (center 0.5, dy=8.5) and y=1 (center 1.5, dy=9.5) erased;
+  // row y=2 (center 2.5, dy=10.5 > 10) MUST remain untouched (255)!
+  const edgeMask = rasterizeMaskAlpha(64, 64, 0, 0, [{ op: 'erase', radius: 10, points: [[32, -8]] }]);
+  assert.equal(edgeMask[0 * 64 + 32], 0, 'Row 0 should be erased');
+  assert.equal(edgeMask[1 * 64 + 32], 0, 'Row 1 should be erased');
+  assert.equal(edgeMask[2 * 64 + 32], 255, 'Row 2 must NOT be erased (center was pulled inward!)');
+  assert.equal(edgeMask[9 * 64 + 32], 255, 'Row 9 must NOT be erased');
+
+  // 2. 1px brush at rightmost pixel (63.5, 32.5) of crop (0,0,64,64):
+  // Expanding crop to (0,0,80,64) or shifting to (10,0,70,64) must keep EXACT source pixel x=63 erased!
+  const onePxStroke = [{ op: 'erase', radius: 0.5, points: [[63.5, 32.5]] }];
+  const m64 = rasterizeMaskAlpha(64, 64, 0, 0, onePxStroke);
+  assert.equal(m64[32 * 64 + 63], 0);
+  assert.equal(m64[32 * 64 + 62], 255);
+
+  const m80 = rasterizeMaskAlpha(80, 64, 0, 0, onePxStroke);
+  assert.equal(m80[32 * 80 + 63], 0, 'Source pixel 63 must remain erased after crop expand');
+  assert.equal(m80[32 * 80 + 64], 255, 'Source pixel 64 must NOT become erased after crop expand');
+
+  // 3. Raw boundary coord [64, 32] with radius=0.5 must NOT falsely snap to pixel 63 on crop width 64
+  const mEdge64 = rasterizeMaskAlpha(64, 64, 0, 0, [{ op: 'erase', radius: 0.5, points: [[64, 32]] }]);
+  assert.equal(mEdge64[32 * 64 + 63], 255, 'Coord 64 must not snap into pixel 63 on width=64 crop');
+});
+
+test('PR2-P2: Strict Atlas Metadata V1 rejects contentBoundsCellPx; Atlas Metadata V2 validates clipped bounds inside cell', () => {
+  const baseV1 = {
+    format: 'sprite-sheet-builder-atlas',
+    schemaVersion: 1,
+    image: 'sheet.png',
+    atlas: { width: 64, height: 64, cols: 1, rows: 1, cellWidth: 64, cellHeight: 64, origin: 'top-left', indexBase: 0 },
+    frames: [{ id: 'r0c0', row: 0, col: 0, x: 0, y: 0, w: 64, h: 64, empty: false, anchorCellPx: { x: 32, y: 32 } }],
+    animations: []
+  };
+  assert.equal(validateAtlasMetadataV1(baseV1).ok, true);
+
+  // V1 MUST reject contentBoundsCellPx
+  const badV1 = structuredClone(baseV1);
+  badV1.frames[0].contentBoundsCellPx = { x: 24, y: 0, w: 40, h: 64 };
+  assert.equal(validateAtlasMetadataV1(badV1).ok, false);
+
+  // V2 accepts clipped bounds inside cell and rejects unclipped out-of-cell bounds (x=24, w=64 > 64)
+  const goodV2 = structuredClone(badV1);
+  goodV2.schemaVersion = 2;
+  assert.equal(validateAtlasMetadataV2(goodV2).ok, true);
+
+  const unclippedV2 = structuredClone(goodV2);
+  unclippedV2.frames[0].contentBoundsCellPx = { x: 24, y: 0, w: 64, h: 64 };
+  assert.equal(validateAtlasMetadataV2(unclippedV2).ok, false);
 });

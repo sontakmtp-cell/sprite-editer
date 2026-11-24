@@ -1718,7 +1718,7 @@ const __mods = {
   deepClone,
   stableSort,
   naturalCompare
- } = __req("src/core/constants.js");const {  validateGrid  } = __req("src/core/validator.js");const {  ProjectStore, createEmptyProject, createDefaultCell  } = __req("src/core/store.js");const {  AssetManager  } = __req("src/engine/asset-manager.js");const {  executeExportJob, triggerBlobDownload  } = __req("src/engine/export-engine.js");const {  serializeProjectToSsb, deserializeProjectFromSsb  } = __req("src/io/project-io.js");const {  RecoveryManager  } = __req("src/io/recovery.js");const {  AtlasView  } = __req("src/ui/atlas-view.js");const {  EditorView  } = __req("src/ui/editor-view.js");const {  AnimationView  } = __req("src/ui/animation-view.js");const {  ModalsController  } = __req("src/ui/modals.js");const { 
+ } = __req("src/core/constants.js");const {  validateGrid  } = __req("src/core/validator.js");const {  checkProjectMaskBudgets, normalizeCellMask  } = __req("src/core/mask.js");const {  ProjectStore, createEmptyProject, createDefaultCell  } = __req("src/core/store.js");const {  AssetManager  } = __req("src/engine/asset-manager.js");const {  executeExportJob, triggerBlobDownload  } = __req("src/engine/export-engine.js");const {  serializeProjectToSsb, deserializeProjectFromSsb  } = __req("src/io/project-io.js");const {  RecoveryManager  } = __req("src/io/recovery.js");const {  AtlasView  } = __req("src/ui/atlas-view.js");const {  EditorView  } = __req("src/ui/editor-view.js");const {  AnimationView  } = __req("src/ui/animation-view.js");const {  ModalsController  } = __req("src/ui/modals.js");const { 
   $,
   clearEl,
   el,
@@ -2564,7 +2564,11 @@ class SpriteSheetBuilderApp {
       });
       if (c !== 'ok') return;
     }
-    this.store.moveOrSwapCell(fromKey, toKey, { copy: isCopy });
+    const moveRes = this.store.moveOrSwapCell(fromKey, toKey, { copy: isCopy });
+    if (!moveRes.committed) {
+      if (moveRes.error) showToast(moveRes.error, 'error', 5500);
+      return;
+    }
     const toPos = parseCellKey(toKey);
     this.selectCell(toPos.row, toPos.col);
   }
@@ -2680,6 +2684,21 @@ class SpriteSheetBuilderApp {
       }
     }
 
+    // Pre-check post-paste mask & manifest budgets before overwrite dialog so rejected pastes never mutate state
+    const simCells = { ...this.store.project.cells };
+    for (const item of plan) {
+      const clean = deepClone(item.cell);
+      const norm = normalizeCellMask(clean.mask);
+      if (norm) clean.mask = norm;
+      else delete clean.mask;
+      simCells[cellKey(item.row, item.col)] = clean;
+    }
+    const preBudget = checkProjectMaskBudgets({ ...this.store.project, cells: simCells });
+    if (!preBudget.ok) {
+      showToast(preBudget.message, 'error', 5500);
+      return;
+    }
+
     const overwriteCount = plan.filter((p) => Boolean(this.store.project.cells[cellKey(p.row, p.col)])).length;
     if (overwriteCount > 0 || outOfBounds > 0 || plan.length > 1) {
       const details = [];
@@ -2699,7 +2718,7 @@ class SpriteSheetBuilderApp {
 
     const pasteRes = this.store.pasteCells(plan);
     if (!pasteRes.committed) {
-      showToast('Không thể dán vì dữ liệu nguồn không còn hợp lệ.', 'error');
+      showToast(pasteRes.error || 'Không thể dán vì dữ liệu nguồn không còn hợp lệ.', 'error', 5500);
       return;
     }
     showToast(`Đã dán ${plan.length} ô.`, 'ok');
@@ -3274,7 +3293,11 @@ class SpriteSheetBuilderApp {
           }
         }
         if (!dest) { showToast('Không còn ô trống phía sau để nhân bản.', 'warn'); return; }
-        this.store.moveOrSwapCell(target.key, cellKey(dest.row, dest.col), { copy: true });
+        const dupRes = this.store.moveOrSwapCell(target.key, cellKey(dest.row, dest.col), { copy: true });
+        if (!dupRes.committed) {
+          if (dupRes.error) showToast(dupRes.error, 'error', 5500);
+          return;
+        }
         this.selectCell(dest.row, dest.col);
       } else if (action === 'swap') {
         const ok = await this.ensureDraftResolved();
@@ -3521,6 +3544,7 @@ const PROJECT_SCHEMA_VERSION_V3 = 3;
 const SUPPORTED_PROJECT_SCHEMA_VERSIONS = Object.freeze([2, 3]);
 const ATLAS_FORMAT = 'sprite-sheet-builder-atlas';
 const ATLAS_SCHEMA_VERSION = 1;
+const ATLAS_SCHEMA_VERSION_V2 = 2;
 const PRESET_FORMAT = 'sprite-sheet-builder-preset';
 const PRESET_SCHEMA_VERSION = 1;
 
@@ -3828,6 +3852,7 @@ exports.PROJECT_SCHEMA_VERSION_V3 = PROJECT_SCHEMA_VERSION_V3;
 exports.SUPPORTED_PROJECT_SCHEMA_VERSIONS = SUPPORTED_PROJECT_SCHEMA_VERSIONS;
 exports.ATLAS_FORMAT = ATLAS_FORMAT;
 exports.ATLAS_SCHEMA_VERSION = ATLAS_SCHEMA_VERSION;
+exports.ATLAS_SCHEMA_VERSION_V2 = ATLAS_SCHEMA_VERSION_V2;
 exports.PRESET_FORMAT = PRESET_FORMAT;
 exports.PRESET_SCHEMA_VERSION = PRESET_SCHEMA_VERSION;
 exports.LIMITS = LIMITS;
@@ -3853,10 +3878,15 @@ const {
   PRESET_SCHEMA_VERSION,
   ATLAS_FORMAT,
   ATLAS_SCHEMA_VERSION,
+  ATLAS_SCHEMA_VERSION_V2,
   parseCellKey,
   isCellInGrid
  } = __req("src/core/constants.js");
-const {  validateCellMaskStrict  } = __req("src/core/mask.js");
+const { 
+  validateCellMaskStrict,
+  measureUtf8Bytes,
+  serializeManifestJsonCompact
+ } = __req("src/core/mask.js");
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 const SAFE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
@@ -4445,6 +4475,13 @@ function validateProjectManifest(raw) {
     }
   }
 
+  if (errors.length === 0) {
+    const manifestBytes = measureUtf8Bytes(serializeManifestJsonCompact(raw));
+    if (manifestBytes > LIMITS.MAX_MANIFEST_BYTES) {
+      errors.push(`Tổng dung lượng manifest (${manifestBytes} B) vượt giới hạn ${LIMITS.MAX_MANIFEST_BYTES} B.`);
+    }
+  }
+
   return { ok: errors.length === 0, errors };
 }
 
@@ -4455,28 +4492,90 @@ function validateProjectManifestV2(raw) {
   return validateProjectManifest(raw);
 }
 
-/**
- * Validate Atlas Metadata V1 output structure.
- */
-function validateAtlasMetadataV1(meta) {
+function _validateAtlasMetadataCommon(meta, expectedVersion) {
   const errors = [];
   if (!isPlainObject(meta)) return { ok: false, errors: ['Metadata phải là object.'] };
+  const topErr = checkAllowedKeys(meta, new Set(['format', 'schemaVersion', 'image', 'atlas', 'frames', 'animations']), 'atlas-metadata');
+  if (topErr) errors.push(topErr);
   if (meta.format !== ATLAS_FORMAT) errors.push('format không khớp.');
-  if (meta.schemaVersion !== ATLAS_SCHEMA_VERSION) errors.push('schemaVersion không khớp.');
+  if (meta.schemaVersion !== expectedVersion) errors.push(`schemaVersion phải là ${expectedVersion}.`);
   if (meta.image !== null && typeof meta.image !== 'string') errors.push('image phải là string hoặc null.');
-  if (!isPlainObject(meta.atlas)) errors.push('atlas thiếu.');
-  else {
+
+  let cw = 0;
+  let ch = 0;
+  if (!isPlainObject(meta.atlas)) {
+    errors.push('atlas thiếu.');
+  } else {
+    const aErr = checkAllowedKeys(
+      meta.atlas,
+      new Set(['width', 'height', 'cols', 'rows', 'cellWidth', 'cellHeight', 'origin', 'indexBase', 'guidesNormalized']),
+      'atlas'
+    );
+    if (aErr) errors.push(aErr);
     if (meta.atlas.origin !== 'top-left') errors.push('origin phải là top-left.');
     if (meta.atlas.indexBase !== 0) errors.push('indexBase phải là 0.');
     if (meta.atlas.width !== meta.atlas.cols * meta.atlas.cellWidth) errors.push('atlas.width không khớp.');
     if (meta.atlas.height !== meta.atlas.rows * meta.atlas.cellHeight) errors.push('atlas.height không khớp.');
+    cw = meta.atlas.cellWidth || 0;
+    ch = meta.atlas.cellHeight || 0;
   }
-  if (!Array.isArray(meta.frames)) errors.push('frames phải là mảng.');
-  else if (meta.atlas && meta.frames.length !== meta.atlas.cols * meta.atlas.rows) {
-    errors.push('Số phần tử frames phải bằng cols × rows.');
+
+  const allowedFrameKeys = expectedVersion === ATLAS_SCHEMA_VERSION_V2
+    ? new Set(['id', 'row', 'col', 'x', 'y', 'w', 'h', 'empty', 'anchorCellPx', 'contentBoundsCellPx'])
+    : new Set(['id', 'row', 'col', 'x', 'y', 'w', 'h', 'empty', 'anchorCellPx']);
+
+  if (!Array.isArray(meta.frames)) {
+    errors.push('frames phải là mảng.');
+  } else {
+    if (meta.atlas && meta.frames.length !== meta.atlas.cols * meta.atlas.rows) {
+      errors.push('Số phần tử frames phải bằng cols × rows.');
+    }
+    for (let i = 0; i < meta.frames.length; i++) {
+      const f = meta.frames[i];
+      if (!isPlainObject(f)) { errors.push(`frames[${i}] không hợp lệ.`); break; }
+      const fkErr = checkAllowedKeys(f, allowedFrameKeys, `frames[${i}]`);
+      if (fkErr) { errors.push(fkErr); break; }
+      if (f.anchorCellPx !== undefined && f.anchorCellPx !== null) {
+        if (!isPlainObject(f.anchorCellPx)) { errors.push(`frames[${i}].anchorCellPx không hợp lệ.`); break; }
+        const anErr = checkAllowedKeys(f.anchorCellPx, new Set(['x', 'y']), `frames[${i}].anchorCellPx`);
+        if (anErr) { errors.push(anErr); break; }
+        if (typeof f.anchorCellPx.x !== 'number' || !Number.isFinite(f.anchorCellPx.x) ||
+            typeof f.anchorCellPx.y !== 'number' || !Number.isFinite(f.anchorCellPx.y)) {
+          errors.push(`frames[${i}].anchorCellPx không hữu hạn.`); break;
+        }
+      }
+      if (expectedVersion === ATLAS_SCHEMA_VERSION_V2 && f.contentBoundsCellPx !== undefined && f.contentBoundsCellPx !== null) {
+        const b = f.contentBoundsCellPx;
+        if (!isPlainObject(b)) { errors.push(`frames[${i}].contentBoundsCellPx không hợp lệ.`); break; }
+        const bErr = checkAllowedKeys(b, new Set(['x', 'y', 'w', 'h']), `frames[${i}].contentBoundsCellPx`);
+        if (bErr) { errors.push(bErr); break; }
+        if (
+          !Number.isInteger(b.x) || !Number.isInteger(b.y) || !Number.isInteger(b.w) || !Number.isInteger(b.h) ||
+          b.x < 0 || b.y < 0 || b.w < 1 || b.h < 1 ||
+          (cw > 0 && b.x + b.w > cw) || (ch > 0 && b.y + b.h > ch)
+        ) {
+          errors.push(`frames[${i}].contentBoundsCellPx nằm ngoài phạm vi ô (${cw}×${ch}).`); break;
+        }
+      }
+    }
   }
+
   if (!Array.isArray(meta.animations)) errors.push('animations phải là mảng.');
   return { ok: errors.length === 0, errors };
+}
+
+/**
+ * Validate Atlas Metadata V1 output structure strictly against schemas/atlas-v1.schema.json.
+ */
+function validateAtlasMetadataV1(meta) {
+  return _validateAtlasMetadataCommon(meta, ATLAS_SCHEMA_VERSION);
+}
+
+/**
+ * Validate Atlas Metadata V2 output structure strictly against schemas/atlas-v2.schema.json.
+ */
+function validateAtlasMetadataV2(meta) {
+  return _validateAtlasMetadataCommon(meta, ATLAS_SCHEMA_VERSION_V2);
 }
 
 exports.validateGrid = validateGrid;
@@ -4484,18 +4583,30 @@ exports.validatePresetV1 = validatePresetV1;
 exports.validateProjectManifest = validateProjectManifest;
 exports.validateProjectManifestV2 = validateProjectManifestV2;
 exports.validateAtlasMetadataV1 = validateAtlasMetadataV1;
+exports.validateAtlasMetadataV2 = validateAtlasMetadataV2;
 
 },
 "src/core/mask.js": function(exports, __req) {
 /**
  * Sprite Sheet Builder — Per-Cell Vector Eraser/Restore Mask Engine (Schema V3).
  * Pure logic, zero DOM dependency, deterministic hard-round brush rasterization,
- * polyline simplification, strict allowlist validation, and resource budgeting.
+ * polyline simplification, Liang-Barsky clipping, strict allowlist validation, and resource budgeting.
  */
 const {  LIMITS  } = __req("src/core/constants.js");
 
 const ALLOWED_STROKE_OPS = new Set(['erase', 'restore']);
 const maskSigMemo = new WeakMap();
+const utf8Encoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
+
+function measureUtf8Bytes(str) {
+  if (typeof str !== 'string' || str.length === 0) return 0;
+  if (utf8Encoder) return utf8Encoder.encode(str).byteLength;
+  return str.length;
+}
+
+function serializeManifestJsonCompact(manifest) {
+  return JSON.stringify(manifest);
+}
 
 function hasMaskStrokes(mask) {
   return Boolean(mask && Array.isArray(mask.strokes) && mask.strokes.length > 0);
@@ -4581,6 +4692,50 @@ function getMaskSignature(mask) {
 }
 
 /**
+ * Liang-Barsky segment clipping against axis-aligned rectangle [minX, maxX] x [minY, maxY].
+ * Returns `{ x0, y0, x1, y1, clippedStart, clippedEnd }` or `null` if segment lies completely outside.
+ */
+function clipSegmentToRect(ax, ay, bx, by, minX, minY, maxX, maxY) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  let t0 = 0;
+  let t1 = 1;
+
+  const clip = (p, q) => {
+    if (Math.abs(p) <= 1e-12) {
+      return q >= 0;
+    }
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+    return true;
+  };
+
+  if (
+    !clip(-dx, ax - minX) ||
+    !clip(dx, maxX - ax) ||
+    !clip(-dy, ay - minY) ||
+    !clip(dy, maxY - ay)
+  ) {
+    return null;
+  }
+
+  return {
+    x0: ax + t0 * dx,
+    y0: ay + t0 * dy,
+    x1: ax + t1 * dx,
+    y1: ay + t1 * dy,
+    clippedStart: t0 > 1e-9,
+    clippedEnd: t1 < 1 - 1e-9
+  };
+}
+
+/**
  * Perpendicular distance squared from point P to segment AB.
  */
 function pointToSegmentDistSq(px, py, ax, ay, bx, by) {
@@ -4653,19 +4808,16 @@ function simplifyStrokePoints(points, epsilon = 0.25) {
 }
 
 /**
- * Compute serialized JSON UTF-8 byte length of a mask object.
+ * Compute compact serialized JSON UTF-8 byte length of a mask object
+ * (matches exact compact format written into `.ssb` manifest.json).
  */
 function measureMaskJsonBytes(mask) {
   if (!hasMaskStrokes(mask)) return 0;
-  const str = JSON.stringify(mask);
-  if (typeof TextEncoder !== 'undefined') {
-    return new TextEncoder().encode(str).byteLength;
-  }
-  return str.length;
+  return measureUtf8Bytes(JSON.stringify(mask));
 }
 
 /**
- * Compute stroke count, point count, and serialized byte size of a single cell mask.
+ * Compute stroke count, point count, and compact serialized byte size of a single cell mask.
  */
 function estimateMaskStats(mask) {
   if (!hasMaskStrokes(mask)) {
@@ -4703,8 +4855,97 @@ function estimateProjectMaskUsage(project, excludeCellKey = null) {
 }
 
 /**
- * Check whether a candidate cell mask fits within per-stroke, per-cell, and project-wide budgets.
+ * Validate ALL mask budgets and total serialized manifest size on an entire post-operation project state.
+ * Used before committing multi-paste, duplicate, Ctrl-drag copy, cell transform, and sync edits.
  * Never silently truncates; returns explicit Vietnamese error when any limit is exceeded.
+ */
+function checkProjectMaskBudgets(project) {
+  if (!project || !project.cells) return { ok: true, strokes: 0, points: 0, maskBytes: 0, manifestBytes: 0 };
+
+  let totalStrokes = 0;
+  let totalPoints = 0;
+  let totalMaskBytes = 0;
+
+  for (const key of Object.keys(project.cells)) {
+    const cell = project.cells[key];
+    if (!hasCellMask(cell)) continue;
+    const strokes = cell.mask.strokes;
+
+    if (strokes.length > LIMITS.MAX_MASK_STROKES_PER_CELL) {
+      return {
+        ok: false,
+        code: 'CELL_MAX_STROKES',
+        message: `Ô "${key}" vượt giới hạn tối đa ${LIMITS.MAX_MASK_STROKES_PER_CELL} nét tẩy/khôi phục.`
+      };
+    }
+
+    let cellPoints = 0;
+    for (let i = 0; i < strokes.length; i++) {
+      const pts = strokes[i].points;
+      if (!Array.isArray(pts) || pts.length > LIMITS.MAX_MASK_POINTS_PER_STROKE) {
+        return {
+          ok: false,
+          code: 'STROKE_MAX_POINTS',
+          message: `Nét vẽ vượt giới hạn tối đa ${LIMITS.MAX_MASK_POINTS_PER_STROKE} điểm trên một nét.`
+        };
+      }
+      cellPoints += pts.length;
+    }
+
+    if (cellPoints > LIMITS.MAX_MASK_POINTS_PER_CELL) {
+      return {
+        ok: false,
+        code: 'CELL_MAX_POINTS',
+        message: `Ô "${key}" vượt giới hạn tối đa ${LIMITS.MAX_MASK_POINTS_PER_CELL.toLocaleString('vi-VN')} điểm mặt nạ.`
+      };
+    }
+
+    totalStrokes += strokes.length;
+    totalPoints += cellPoints;
+    totalMaskBytes += measureMaskJsonBytes(cell.mask);
+  }
+
+  if (totalStrokes > LIMITS.MAX_PROJECT_MASK_STROKES) {
+    return {
+      ok: false,
+      code: 'PROJECT_MAX_STROKES',
+      message: `Thao tác sẽ nâng tổng số nét mặt nạ lên ${totalStrokes.toLocaleString('vi-VN')}, vượt giới hạn ${LIMITS.MAX_PROJECT_MASK_STROKES.toLocaleString('vi-VN')} nét của project.`
+    };
+  }
+  if (totalPoints > LIMITS.MAX_PROJECT_MASK_POINTS) {
+    return {
+      ok: false,
+      code: 'PROJECT_MAX_POINTS',
+      message: `Thao tác sẽ nâng tổng số điểm mặt nạ lên ${totalPoints.toLocaleString('vi-VN')}, vượt giới hạn ${LIMITS.MAX_PROJECT_MASK_POINTS.toLocaleString('vi-VN')} điểm của project.`
+    };
+  }
+  if (totalMaskBytes > LIMITS.MAX_PROJECT_MASK_BYTES) {
+    return {
+      ok: false,
+      code: 'PROJECT_MAX_BYTES',
+      message: `Tổng dung lượng dữ liệu mặt nạ (${(totalMaskBytes / (1024 * 1024)).toFixed(2)} MiB) vượt giới hạn ${(LIMITS.MAX_PROJECT_MASK_BYTES / (1024 * 1024)).toFixed(0)} MiB của project.`
+    };
+  }
+
+  // Synchronize with exact compact JSON manifest size written to `.ssb` (<= 8 MiB)
+  if (totalStrokes > 0) {
+    const manifestBytes = measureUtf8Bytes(serializeManifestJsonCompact(project));
+    if (manifestBytes > LIMITS.MAX_MANIFEST_BYTES) {
+      return {
+        ok: false,
+        code: 'MANIFEST_MAX_BYTES',
+        message: `Tổng dung lượng manifest project (${(manifestBytes / (1024 * 1024)).toFixed(2)} MiB) vượt giới hạn ${(LIMITS.MAX_MANIFEST_BYTES / (1024 * 1024)).toFixed(0)} MiB khi lưu .ssb.`
+      };
+    }
+    return { ok: true, strokes: totalStrokes, points: totalPoints, maskBytes: totalMaskBytes, manifestBytes };
+  }
+
+  return { ok: true, strokes: 0, points: 0, maskBytes: 0, manifestBytes: 0 };
+}
+
+/**
+ * Check whether a candidate cell mask fits within per-stroke, per-cell, project-wide,
+ * and serialized manifest budgets.
  */
 function checkMaskBudget(project, activeCellKey, candidateMask) {
   if (!hasMaskStrokes(candidateMask)) return { ok: true };
@@ -4763,6 +5004,21 @@ function checkMaskBudget(project, activeCellKey, candidateMask) {
     };
   }
 
+  // Verify exact post-change compact manifest fits inside MAX_MANIFEST_BYTES
+  if (project && project.cells && activeCellKey) {
+    const prevCell = project.cells[activeCellKey];
+    const simulatedCells = { ...project.cells };
+    simulatedCells[activeCellKey] = prevCell ? { ...prevCell, mask: candidateMask } : { mask: candidateMask };
+    const manifestBytes = measureUtf8Bytes(serializeManifestJsonCompact({ ...project, cells: simulatedCells }));
+    if (manifestBytes > LIMITS.MAX_MANIFEST_BYTES) {
+      return {
+        ok: false,
+        code: 'MANIFEST_MAX_BYTES',
+        message: `Tổng dung lượng manifest project (${(manifestBytes / (1024 * 1024)).toFixed(2)} MiB) vượt giới hạn ${(LIMITS.MAX_MANIFEST_BYTES / (1024 * 1024)).toFixed(0)} MiB.`
+      };
+    }
+  }
+
   return {
     ok: true,
     cellStrokes: candidateMask.strokes.length,
@@ -4773,8 +5029,9 @@ function checkMaskBudget(project, activeCellKey, candidateMask) {
 
 /**
  * Strict allowlist validator for a single cell's `mask` object in Schema V3.
- * Checks types, allowed keys, finite numbers, radius range, source coordinate bounds,
- * per-stroke & per-cell limits, and returns stats for project-wide budget accumulation.
+ * Checks types, allowed keys, finite numbers, radius range, source coordinate envelope
+ * (`[-radius, source.width + radius]` x `[-radius, source.height + radius]`, allowing
+ * accurate edge brushing without clamping the brush center inward), per-stroke & per-cell limits.
  */
 function validateCellMaskStrict(mask, source, cellPath) {
   const errors = [];
@@ -4849,6 +5106,12 @@ function validateCellMaskStrict(mask, source, cellPath) {
       break;
     }
 
+    const r = st.radius;
+    const minCoordX = -r;
+    const maxCoordX = maxW + r;
+    const minCoordY = -r;
+    const maxCoordY = maxH + r;
+
     for (let j = 0; j < st.points.length; j++) {
       const pt = st.points[j];
       if (!Array.isArray(pt) || pt.length !== 2) {
@@ -4864,8 +5127,8 @@ function validateCellMaskStrict(mask, source, cellPath) {
         errors.push(`${stPath}.points[${j}] chứa số không hữu hạn.`);
         break;
       }
-      if (x < 0 || y < 0 || x > maxW || y > maxH) {
-        errors.push(`${stPath}.points[${j}] (${x}, ${y}) nằm ngoài phạm vi ảnh nguồn (${maxW}×${maxH}).`);
+      if (x < minCoordX || y < minCoordY || x > maxCoordX || y > maxCoordY) {
+        errors.push(`${stPath}.points[${j}] (${x}, ${y}) nằm ngoài phạm vi cọ trên ảnh nguồn (${maxW}×${maxH}, bán kính ${r}).`);
         break;
       }
     }
@@ -4887,33 +5150,27 @@ function validateCellMaskStrict(mask, source, cellPath) {
  * into a local crop alpha mask buffer `maskAlpha` (Uint8Array of length width * height).
  * - `op === 'erase'` writes 0 (transparent)
  * - `op === 'restore'` writes 255 (preserve exact original alpha)
- * Handles 1-point clicks, 1px brushes (radius=0.5), and fast long drags with zero gaps.
+ * - Strictly source-coordinate invariant: crop boundaries only clip pixels outside `[regionX, regionX+width) x [regionY, regionY+height)`
+ *   and NEVER pull the brush center inward or snap edge pixels differently when crop changes!
  */
 function rasterizeStrokeSegmentIntoAlpha(maskAlpha, width, height, regionX, regionY, op, radius, p0, p1) {
   if (!maskAlpha || width <= 0 || height <= 0 || !p0 || !p1) return;
   const val = op === 'restore' ? 255 : 0;
 
-  // Convert source pixel coords into crop-local coords
-  const ax = p0[0] - regionX;
-  const ay = p0[1] - regionY;
-  const bx = p1[0] - regionX;
-  const by = p1[1] - regionY;
-
-  // Stamp exact pixel(s) for very small brushes (radius < 0.75, e.g. 1px diameter = 0.5 radius)
-  // so clicking or dragging a 1px brush never misses due to sub-pixel center distance > 0.5.
+  // For very small brushes (radius < 0.75, e.g. 1px diameter = 0.5 radius):
+  // Step directly in EXIF-oriented source pixel coordinates so `Math.floor(srcX)` is 100% invariant
+  // under crop resize/shift (never snaps x === width to width - 1).
   if (radius < 0.75) {
-    const dx = bx - ax;
-    const dy = by - ay;
-    const dist = Math.hypot(dx, dy);
+    const sdx = p1[0] - p0[0];
+    const sdy = p1[1] - p0[1];
+    const dist = Math.hypot(sdx, sdy);
     const steps = Math.max(1, Math.ceil(dist * 2));
     for (let s = 0; s <= steps; s++) {
       const t = steps === 0 ? 0 : s / steps;
-      const sx = ax + dx * t;
-      const sy = ay + dy * t;
-      let px = Math.floor(sx);
-      let py = Math.floor(sy);
-      if (px === width && sx === width) px = width - 1;
-      if (py === height && sy === height) py = height - 1;
+      const srcPx = Math.floor(p0[0] + sdx * t);
+      const srcPy = Math.floor(p0[1] + sdy * t);
+      const px = srcPx - regionX;
+      const py = srcPy - regionY;
       if (px >= 0 && px < width && py >= 0 && py < height) {
         maskAlpha[py * width + px] = val;
       }
@@ -4921,7 +5178,13 @@ function rasterizeStrokeSegmentIntoAlpha(maskAlpha, width, height, regionX, regi
     if (radius <= 0.5) return;
   }
 
-  // Tight bounding box intersected with crop [0, width-1] x [0, height-1]
+  // Convert source pixel coords into crop-local coords (pure translation, zero clamping!)
+  const ax = p0[0] - regionX;
+  const ay = p0[1] - regionY;
+  const bx = p1[0] - regionX;
+  const by = p1[1] - regionY;
+
+  // Tight bounding box clipped to crop [0, width-1] x [0, height-1]
   const minX = Math.max(0, Math.floor(Math.min(ax, bx) - radius));
   const maxX = Math.min(width - 1, Math.ceil(Math.max(ax, bx) + radius));
   const minY = Math.max(0, Math.floor(Math.min(ay, by) - radius));
@@ -4934,7 +5197,7 @@ function rasterizeStrokeSegmentIntoAlpha(maskAlpha, width, height, regionX, regi
   const lenSq = dx * dx + dy * dy;
 
   if (lenSq <= 1e-12) {
-    // 1-point circle
+    // 1-point hard circle
     for (let py = minY; py <= maxY; py++) {
       const cy = py + 0.5 - ay;
       const cySq = cy * cy;
@@ -5016,16 +5279,20 @@ function applyMaskAlphaToRGBA(srcRgba, maskAlpha) {
   return out;
 }
 
+exports.measureUtf8Bytes = measureUtf8Bytes;
+exports.serializeManifestJsonCompact = serializeManifestJsonCompact;
 exports.hasMaskStrokes = hasMaskStrokes;
 exports.hasCellMask = hasCellMask;
 exports.projectHasMasks = projectHasMasks;
 exports.normalizeCellMask = normalizeCellMask;
 exports.roundMaskCoord = roundMaskCoord;
 exports.getMaskSignature = getMaskSignature;
+exports.clipSegmentToRect = clipSegmentToRect;
 exports.simplifyStrokePoints = simplifyStrokePoints;
 exports.measureMaskJsonBytes = measureMaskJsonBytes;
 exports.estimateMaskStats = estimateMaskStats;
 exports.estimateProjectMaskUsage = estimateProjectMaskUsage;
+exports.checkProjectMaskBudgets = checkProjectMaskBudgets;
 exports.checkMaskBudget = checkMaskBudget;
 exports.validateCellMaskStrict = validateCellMaskStrict;
 exports.rasterizeStrokeSegmentIntoAlpha = rasterizeStrokeSegmentIntoAlpha;
@@ -5056,7 +5323,7 @@ const {
   mimeToExt
  } = __req("src/core/constants.js");
 const {  scaleOffsetsForCellResize  } = __req("src/core/geometry.js");
-const {  normalizeCellMask  } = __req("src/core/mask.js");
+const {  normalizeCellMask, checkProjectMaskBudgets  } = __req("src/core/mask.js");
 const {  validateGrid  } = __req("src/core/validator.js");
 
 function createDefaultCell(assetId, defaultAlphaThreshold = 8) {
@@ -5691,7 +5958,8 @@ class ProjectStore {
 
   setCellTransform(row, col, cellData, label = 'Chỉnh sửa frame') {
     const key = cellKey(row, col);
-    return this.commit(label, (p) => {
+    let budgetErr = null;
+    const res = this.commit(label, (p) => {
       if (!isCellInGrid(row, col, p.grid)) return false;
       const asset = p.assets.find((a) => a.id === cellData?.assetId);
       if (!asset || !p.sources.some((s) => s.id === asset.sourceId)) return false;
@@ -5700,11 +5968,19 @@ class ProjectStore {
       if (normMask) clean.mask = normMask;
       else delete clean.mask;
       p.cells[key] = clean;
+      const budget = checkProjectMaskBudgets(p);
+      if (!budget.ok) {
+        budgetErr = budget;
+        return false;
+      }
     });
+    if (budgetErr) return { committed: false, error: budgetErr.message, code: budgetErr.code };
+    return res;
   }
 
   applyMultipleCellTransforms(updatesMap, label = 'Đồng bộ căn chỉnh') {
-    return this.commit(label, (p) => {
+    let budgetErr = null;
+    const res = this.commit(label, (p) => {
       let count = 0;
       for (const [key, cellData] of Object.entries(updatesMap)) {
         const pos = parseCellKey(key);
@@ -5717,7 +5993,14 @@ class ProjectStore {
         count++;
       }
       if (count === 0) return false;
+      const budget = checkProjectMaskBudgets(p);
+      if (!budget.ok) {
+        budgetErr = budget;
+        return false;
+      }
     });
+    if (budgetErr) return { committed: false, error: budgetErr.message, code: budgetErr.code };
+    return res;
   }
 
   clearCells(keys) {
@@ -5735,7 +6018,8 @@ class ProjectStore {
 
   moveOrSwapCell(fromKey, toKey, { copy = false } = {}) {
     if (fromKey === toKey) return { committed: false };
-    return this.commit(copy ? 'Sao chép ô' : 'Di chuyển/Hoán đổi ô', (p) => {
+    let budgetErr = null;
+    const res = this.commit(copy ? 'Sao chép ô' : 'Di chuyển/Hoán đổi ô', (p) => {
       const fromPos = parseCellKey(fromKey);
       const toPos = parseCellKey(toKey);
       if (!fromPos || !toPos || !isCellInGrid(fromPos.row, fromPos.col, p.grid) || !isCellInGrid(toPos.row, toPos.col, p.grid)) {
@@ -5746,6 +6030,11 @@ class ProjectStore {
 
       if (copy) {
         p.cells[toKey] = deepClone(srcCell);
+        const budget = checkProjectMaskBudgets(p);
+        if (!budget.ok) {
+          budgetErr = budget;
+          return false;
+        }
       } else {
         const dstCell = p.cells[toKey];
         p.cells[toKey] = deepClone(srcCell);
@@ -5756,6 +6045,8 @@ class ProjectStore {
         }
       }
     });
+    if (budgetErr) return { committed: false, error: budgetErr.message, code: budgetErr.code };
+    return res;
   }
 
   pasteCells(pastePlan, label = 'Dán nội dung ô') {
@@ -5778,7 +6069,8 @@ class ProjectStore {
       return { committed: false, missingAssetIds };
     }
 
-    return this.commit(label, (p) => {
+    let budgetErr = null;
+    const res = this.commit(label, (p) => {
       const assetSet = new Set(p.assets.map((a) => a.id));
       const sourceSet = new Set(p.sources.map((s) => s.id));
       let count = 0;
@@ -5796,7 +6088,14 @@ class ProjectStore {
         count++;
       }
       if (count === 0) return false;
+      const budget = checkProjectMaskBudgets(p);
+      if (!budget.ok) {
+        budgetErr = budget;
+        return false;
+      }
     });
+    if (budgetErr) return { committed: false, missingAssetIds: [], error: budgetErr.message, code: budgetErr.code };
+    return res;
   }
 
   // --- Animation Group CRUD (Spec §9) ---
@@ -7253,6 +7552,7 @@ exports.verifyEncodedSignature = verifyEncodedSignature;
 const { 
   ATLAS_FORMAT,
   ATLAS_SCHEMA_VERSION,
+  ATLAS_SCHEMA_VERSION_V2,
   LIMITS,
   cellKey,
   parseCellKey,
@@ -7261,7 +7561,7 @@ const {
   pad3,
   mimeToExt
  } = __req("src/core/constants.js");
-const {  computeCellGeometry  } = __req("src/core/geometry.js");
+const {  computeCellGeometry, computeAlphaBoundsFromRGBA  } = __req("src/core/geometry.js");
 const {  hasCellMask  } = __req("src/core/mask.js");
 const {  verifyEncodedSignature  } = __req("src/core/image-inspect.js");
 const {  getFrameDurationMs  } = __req("src/core/animation-clock.js");
@@ -7507,71 +7807,112 @@ async function renderSingleCellToCanvas(project, assetManager, row, col) {
 }
 
 /**
- * Build Generic Atlas JSON Metadata V1 (Spec §11.3, schemas/atlas-v1.schema.json).
+ * Shared internal Atlas Metadata builder for Schema V1 (strictly compatible with original
+ * schemas/atlas-v1.schema.json) and Schema V2 (adds clip-accurate `contentBoundsCellPx`
+ * measured directly from the rendered & cell-clipped exported RGBA pixels).
  */
-async function buildAtlasMetadataV1(project, assetManager, { imageFilename = null, includeGuidesAndAnchors = true } = {}) {
+async function _buildAtlasMetadata(
+  project,
+  assetManager,
+  {
+    imageFilename = null,
+    includeGuidesAndAnchors = true,
+    schemaVersion = ATLAS_SCHEMA_VERSION,
+    includeContentBounds = false
+  } = {}
+) {
   const { cols, rows, cellWidth, cellHeight } = project.grid;
+  const emitBounds = schemaVersion === ATLAS_SCHEMA_VERSION_V2 && includeContentBounds;
   const frames = [];
 
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const key = cellKey(r, c);
-      const cell = project.cells[key];
-      const frameObj = {
-        id: `r${r}c${c}`,
-        row: r,
-        col: c,
-        x: c * cellWidth,
-        y: r * cellHeight,
-        w: cellWidth,
-        h: cellHeight,
-        empty: !cell
-      };
+  let scratch = null;
+  if (emitBounds) {
+    scratch = createOutputCanvas(cellWidth, cellHeight);
+  }
 
-      if (includeGuidesAndAnchors && cell) {
-        const asset = project.assets.find((a) => a.id === cell.assetId);
-        const source = asset ? project.sources.find((s) => s.id === asset.sourceId) : null;
-        if (asset && source) {
-          const info = await assetManager.analyzeCellPixels(asset, source, cell.alphaThreshold, cell.mask);
-          const alphaBounds = info?.alphaBounds || null;
-          const erasedEmpty = hasCellMask(cell) && (info?.allTransparent || (cell.fitMode === 'alpha' && !alphaBounds));
-          if (erasedEmpty) {
-            frameObj.anchorCellPx = null;
-            frameObj.contentBoundsCellPx = null;
-          } else {
-            const geom = computeCellGeometry({
-              cellWidth,
-              cellHeight,
-              row: r,
-              col: c,
-              region: asset.region,
-              transform: cell,
-              alphaBounds
-            });
-            if (geom && Number.isFinite(geom.anchorOutX) && Number.isFinite(geom.anchorOutY)) {
-              frameObj.anchorCellPx = {
-                x: geom.anchorOutX,
-                y: geom.anchorOutY
-              };
-            } else {
-              frameObj.anchorCellPx = null;
+  try {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const key = cellKey(r, c);
+        const cell = project.cells[key];
+        const frameObj = {
+          id: `r${r}c${c}`,
+          row: r,
+          col: c,
+          x: c * cellWidth,
+          y: r * cellHeight,
+          w: cellWidth,
+          h: cellHeight,
+          empty: !cell
+        };
+
+        if ((includeGuidesAndAnchors || emitBounds) && cell) {
+          const asset = project.assets.find((a) => a.id === cell.assetId);
+          const source = asset ? project.sources.find((s) => s.id === asset.sourceId) : null;
+          if (asset && source) {
+            const info = await assetManager.analyzeCellPixels(asset, source, cell.alphaThreshold, cell.mask);
+            const alphaBounds = info?.alphaBounds || null;
+            const erasedEmpty = hasCellMask(cell) && (info?.allTransparent || (cell.fitMode === 'alpha' && !alphaBounds));
+
+            if (includeGuidesAndAnchors) {
+              if (erasedEmpty) {
+                frameObj.anchorCellPx = null;
+              } else {
+                const geom = computeCellGeometry({
+                  cellWidth,
+                  cellHeight,
+                  row: r,
+                  col: c,
+                  region: asset.region,
+                  transform: cell,
+                  alphaBounds
+                });
+                frameObj.anchorCellPx =
+                  geom && Number.isFinite(geom.anchorOutX) && Number.isFinite(geom.anchorOutY)
+                    ? { x: geom.anchorOutX, y: geom.anchorOutY }
+                    : null;
+              }
             }
-            if (geom?.renderedAlphaRect) {
-              frameObj.contentBoundsCellPx = {
-                x: geom.renderedAlphaRect.x,
-                y: geom.renderedAlphaRect.y,
-                w: geom.renderedAlphaRect.w,
-                h: geom.renderedAlphaRect.h
-              };
-            } else {
-              frameObj.contentBoundsCellPx = null;
+
+            if (emitBounds) {
+              if (erasedEmpty) {
+                frameObj.contentBoundsCellPx = null;
+              } else {
+                const drawable = await assetManager.getCellDrawable(asset, source, cell.mask);
+                if (drawable && scratch) {
+                  scratch.ctx.clearRect(0, 0, cellWidth, cellHeight);
+                  drawCellOnContext(scratch.ctx, {
+                    cellWidth,
+                    cellHeight,
+                    originX: 0,
+                    originY: 0,
+                    region: asset.region,
+                    transform: cell,
+                    alphaBounds,
+                    drawable,
+                    smoothing: project.settings.smoothing
+                  });
+                  const imgData = scratch.ctx.getImageData(0, 0, cellWidth, cellHeight);
+                  // Measure exact alpha > 0 bounds from the actually exported, clipped cell bitmap
+                  const clippedBounds = computeAlphaBoundsFromRGBA(imgData.data, cellWidth, cellHeight, 0);
+                  frameObj.contentBoundsCellPx = clippedBounds
+                    ? { x: clippedBounds.x, y: clippedBounds.y, w: clippedBounds.w, h: clippedBounds.h }
+                    : null;
+                } else {
+                  frameObj.contentBoundsCellPx = null;
+                }
+              }
             }
           }
+        } else if (emitBounds) {
+          frameObj.contentBoundsCellPx = null;
         }
-      }
 
-      frames.push(frameObj);
+        frames.push(frameObj);
+      }
     }
+  } finally {
+    if (scratch) disposeCanvas(scratch.canvas);
   }
 
   const animations = project.animations.map((anim) => {
@@ -7606,12 +7947,37 @@ async function buildAtlasMetadataV1(project, assetManager, { imageFilename = nul
 
   return {
     format: ATLAS_FORMAT,
-    schemaVersion: ATLAS_SCHEMA_VERSION,
+    schemaVersion,
     image: imageFilename,
     atlas: atlasObj,
     frames,
     animations
   };
+}
+
+/**
+ * Build Generic Atlas JSON Metadata V1 (Spec §11.3, strictly conforms to schemas/atlas-v1.schema.json).
+ */
+async function buildAtlasMetadataV1(project, assetManager, { imageFilename = null, includeGuidesAndAnchors = true } = {}) {
+  return _buildAtlasMetadata(project, assetManager, {
+    imageFilename,
+    includeGuidesAndAnchors,
+    schemaVersion: ATLAS_SCHEMA_VERSION,
+    includeContentBounds: false
+  });
+}
+
+/**
+ * Build Atlas JSON Metadata V2 (conforms to schemas/atlas-v2.schema.json, includes clip-accurate
+ * `contentBoundsCellPx` measured directly from exported cell pixels).
+ */
+async function buildAtlasMetadataV2(project, assetManager, { imageFilename = null, includeGuidesAndAnchors = true } = {}) {
+  return _buildAtlasMetadata(project, assetManager, {
+    imageFilename,
+    includeGuidesAndAnchors,
+    schemaVersion: ATLAS_SCHEMA_VERSION_V2,
+    includeContentBounds: true
+  });
 }
 
 /**
@@ -7632,9 +7998,12 @@ async function executeExportJob(project, assetManager, config, { signal = null, 
   const quality = config.webpQuality ?? project.settings.webpQuality ?? 0.92;
   const type = config.type || 'atlas';
 
+  const useAtlasMetaV2 = config.metadataSchemaVersion === ATLAS_SCHEMA_VERSION_V2 || Boolean(config.includeContentBounds);
+
   if (type === 'json') {
     if (onProgress) onProgress(1, 1, 'Đang tạo JSON metadata...');
-    const meta = await buildAtlasMetadataV1(project, assetManager, {
+    const metaBuilder = useAtlasMetaV2 ? buildAtlasMetadataV2 : buildAtlasMetadataV1;
+    const meta = await metaBuilder(project, assetManager, {
       imageFilename: null,
       includeGuidesAndAnchors: config.includeGuidesAndAnchors !== false
     });
@@ -7779,7 +8148,8 @@ async function executeExportJob(project, assetManager, config, { signal = null, 
     if (includeJson) {
       if (signal?.aborted) throw new Error('CANCELLED');
       if (onProgress) onProgress(++doneSteps, totalSteps, 'Đang tạo JSON metadata...');
-      const meta = await buildAtlasMetadataV1(project, assetManager, {
+      const metaBuilder = useAtlasMetaV2 ? buildAtlasMetadataV2 : buildAtlasMetadataV1;
+      const meta = await metaBuilder(project, assetManager, {
         imageFilename: atlasFilename,
         includeGuidesAndAnchors: config.includeGuidesAndAnchors !== false
       });
@@ -7916,6 +8286,7 @@ exports.renderAtlasToCanvas = renderAtlasToCanvas;
 exports.renderStripToCanvas = renderStripToCanvas;
 exports.renderSingleCellToCanvas = renderSingleCellToCanvas;
 exports.buildAtlasMetadataV1 = buildAtlasMetadataV1;
+exports.buildAtlasMetadataV2 = buildAtlasMetadataV2;
 exports.getDefaultAtlasFilename = getDefaultAtlasFilename;
 exports.executeExportJob = executeExportJob;
 exports.buildFrameExportTasks = buildFrameExportTasks;
@@ -8855,7 +9226,7 @@ const {
   deepClone
  } = __req("src/core/constants.js");
 const {  inspectImageBytes  } = __req("src/core/image-inspect.js");
-const {  normalizeCellMask, projectHasMasks  } = __req("src/core/mask.js");
+const {  normalizeCellMask, projectHasMasks, serializeManifestJsonCompact  } = __req("src/core/mask.js");
 const {  validateProjectManifest  } = __req("src/core/validator.js");
 const {  createZip, readZip  } = __req("src/io/zip.js");
 
@@ -8893,7 +9264,7 @@ async function serializeProjectToSsb(project, getSourceBytes, onProgress = null)
     throw new Error(`Manifest không hợp lệ khi lưu: ${val.errors[0]}`);
   }
 
-  const manifestJson = JSON.stringify(manifest, null, 2);
+  const manifestJson = serializeManifestJsonCompact(manifest);
   const manifestBytes = textEncoder.encode(manifestJson);
   if (manifestBytes.byteLength > LIMITS.MAX_MANIFEST_BYTES) {
     throw new Error(`Manifest vượt giới hạn ${(LIMITS.MAX_MANIFEST_BYTES / (1024 * 1024)).toFixed(0)} MiB.`);
@@ -10098,6 +10469,9 @@ function showToast(message, type = 'info', durationMs = 4200) {
     if (toast.parentNode) toast.remove();
   };
   closeBtn.addEventListener('click', remove);
+  while (container.children.length >= 3) {
+    container.firstElementChild.remove();
+  }
   container.appendChild(toast);
   if (durationMs > 0) {
     setTimeout(remove, durationMs);
@@ -10212,6 +10586,7 @@ const {
   normalizeCellMask,
   getMaskSignature,
   roundMaskCoord,
+  clipSegmentToRect,
   simplifyStrokePoints,
   checkMaskBudget,
   rasterizeMaskAlpha,
@@ -10688,17 +11063,13 @@ class EditorView {
     const localSrcY = (outY - locked.geom.localY) / locked.geom.scale;
     const rawSrcX = locked.region.x + localSrcX;
     const rawSrcY = locked.region.y + localSrcY;
-    const clampedX = Math.max(locked.region.x, Math.min(locked.region.x + locked.region.w, rawSrcX));
-    const clampedY = Math.max(locked.region.y, Math.min(locked.region.y + locked.region.h, rawSrcY));
     return {
       outX,
       outY,
       localSrcX,
       localSrcY,
       rawSrcX,
-      rawSrcY,
-      srcX: roundMaskCoord(clampedX),
-      srcY: roundMaskCoord(clampedY)
+      rawSrcY
     };
   }
 
@@ -11038,15 +11409,29 @@ class EditorView {
     };
 
     const radius = this.brushSize / 2;
+    const isOnePxBrush = radius <= 0.5;
     const hit = this._clientToSourcePoint(e.clientX, e.clientY, locked);
     this.hoverOutPos = { x: hit.outX, y: hit.outY };
 
-    // Ignore clicks completely outside brush reach of the asset crop
-    if (
-      hit.localSrcX < -radius || hit.localSrcX > locked.region.w + radius ||
-      hit.localSrcY < -radius || hit.localSrcY > locked.region.h + radius
-    ) {
-      return;
+    // Ignore clicks completely outside brush reach of the asset crop (never pull center inward!)
+    let p0;
+    if (isOnePxBrush) {
+      if (
+        hit.localSrcX < 0 || hit.localSrcX >= locked.region.w ||
+        hit.localSrcY < 0 || hit.localSrcY >= locked.region.h
+      ) {
+        return;
+      }
+      // Lock 1px brush to exact source pixel center so rounding & crop edits never shift pixels
+      p0 = [Math.floor(hit.rawSrcX) + 0.5, Math.floor(hit.rawSrcY) + 0.5];
+    } else {
+      if (
+        hit.localSrcX < -radius || hit.localSrcX > locked.region.w + radius ||
+        hit.localSrcY < -radius || hit.localSrcY > locked.region.h + radius
+      ) {
+        return;
+      }
+      p0 = [roundMaskCoord(hit.rawSrcX), roundMaskCoord(hit.rawSrcY)];
     }
 
     const op = this.toolMode === 'restore' ? 'restore' : 'erase';
@@ -11054,7 +11439,7 @@ class EditorView {
 
     // Pre-check stroke count / project budget before starting (never silently drop/truncate!)
     const preCandidate = {
-      strokes: [...existingStrokes, { op, radius, points: [[hit.srcX, hit.srcY]] }]
+      strokes: [...existingStrokes, { op, radius, points: [p0] }]
     };
     const preBudget = checkMaskBudget(this.app.store.project, this.cellKey, preCandidate);
     if (!preBudget.ok) {
@@ -11070,7 +11455,6 @@ class EditorView {
     const initAlpha = rasterizeMaskAlpha(rw, rh, rx, ry, existingStrokes);
     this._liveMaskAlpha.set(initAlpha);
 
-    const p0 = [hit.srcX, hit.srcY];
     rasterizeStrokeSegmentIntoAlpha(this._liveMaskAlpha, rw, rh, rx, ry, op, radius, p0, p0);
     this._liveDirty = true;
 
@@ -11078,7 +11462,10 @@ class EditorView {
       pointerId: e.pointerId,
       op,
       radius,
-      points: [p0],
+      isOnePxBrush,
+      subStrokes: [[p0]],
+      lastRaw: [hit.rawSrcX, hit.rawSrcY],
+      exitedReach: false,
       locked,
       baseDrawable,
       limitReached: false
@@ -11091,6 +11478,46 @@ class EditorView {
     this.requestRender();
   }
 
+  _appendStrokeSegment(bs, segStart, segEnd, forceNewSubStroke) {
+    const { x: rx, y: ry, w: rw, h: rh } = bs.locked.region;
+    const minDist = bs.isOnePxBrush ? 0.5 : Math.max(0.25, bs.radius * 0.12);
+    const minDistSq = minDist * minDist;
+
+    let activePts = bs.subStrokes[bs.subStrokes.length - 1];
+    if (forceNewSubStroke) {
+      activePts = [segStart];
+      bs.subStrokes.push(activePts);
+      rasterizeStrokeSegmentIntoAlpha(this._liveMaskAlpha, rw, rh, rx, ry, bs.op, bs.radius, segStart, segStart);
+      this._liveDirty = true;
+    }
+
+    const prev = activePts[activePts.length - 1];
+    const dx = segEnd[0] - prev[0];
+    const dy = segEnd[1] - prev[1];
+    if (dx * dx + dy * dy < minDistSq) return;
+
+    if (activePts.length >= LIMITS.MAX_MASK_POINTS_PER_STROKE) {
+      const eps = bs.isOnePxBrush ? 0.1 : Math.min(0.35, Math.max(0.1, bs.radius * 0.04));
+      const simplified = simplifyStrokePoints(activePts, eps);
+      if (simplified.length < LIMITS.MAX_MASK_POINTS_PER_STROKE) {
+        bs.subStrokes[bs.subStrokes.length - 1] = simplified;
+        activePts = simplified;
+      } else {
+        bs.limitReached = true;
+        showToast(
+          `Nét vẽ đã đạt giới hạn tối đa ${LIMITS.MAX_MASK_POINTS_PER_STROKE} điểm — hãy nhả chuột để kết thúc nét.`,
+          'warn',
+          4500
+        );
+        return;
+      }
+    }
+
+    activePts.push(segEnd);
+    rasterizeStrokeSegmentIntoAlpha(this._liveMaskAlpha, rw, rh, rx, ry, bs.op, bs.radius, prev, segEnd);
+    this._liveDirty = true;
+  }
+
   _continueBrushStroke(e) {
     const bs = this.brushState;
     if (!bs) return;
@@ -11099,42 +11526,42 @@ class EditorView {
     const coalesced = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
     const events = coalesced && coalesced.length > 0 ? coalesced : [e];
     const { x: rx, y: ry, w: rw, h: rh } = bs.locked.region;
-    const minDist = Math.max(0.25, bs.radius * 0.12);
-    const minDistSq = minDist * minDist;
+    const r = bs.radius;
+    const clipMinX = bs.isOnePxBrush ? rx : rx - r;
+    const clipMinY = bs.isOnePxBrush ? ry : ry - r;
+    const clipMaxX = bs.isOnePxBrush ? rx + rw - 1e-4 : rx + rw + r;
+    const clipMaxY = bs.isOnePxBrush ? ry + rh - 1e-4 : ry + rh + r;
 
     for (let i = 0; i < events.length; i++) {
       const ev = events[i];
       const hit = this._clientToSourcePoint(ev.clientX, ev.clientY, bs.locked);
       this.hoverOutPos = { x: hit.outX, y: hit.outY };
 
+      const prevRaw = bs.lastRaw;
+      const curRaw = [hit.rawSrcX, hit.rawSrcY];
+      bs.lastRaw = curRaw;
+
       if (bs.limitReached) continue;
 
-      const prev = bs.points[bs.points.length - 1];
-      const dx = hit.srcX - prev[0];
-      const dy = hit.srcY - prev[1];
-      if (dx * dx + dy * dy < minDistSq) continue;
-
-      if (bs.points.length >= LIMITS.MAX_MASK_POINTS_PER_STROKE) {
-        // Attempt gentle sub-pixel polyline simplification once before refusing additional points
-        const eps = Math.min(0.35, Math.max(0.1, bs.radius * 0.04));
-        const simplified = simplifyStrokePoints(bs.points, eps);
-        if (simplified.length < LIMITS.MAX_MASK_POINTS_PER_STROKE) {
-          bs.points = simplified;
-        } else {
-          bs.limitReached = true;
-          showToast(
-            `Nét vẽ đã đạt giới hạn tối đa ${LIMITS.MAX_MASK_POINTS_PER_STROKE} điểm — hãy nhả chuột để kết thúc nét.`,
-            'warn',
-            4500
-          );
-          continue;
-        }
+      const clipped = clipSegmentToRect(
+        prevRaw[0], prevRaw[1], curRaw[0], curRaw[1],
+        clipMinX, clipMinY, clipMaxX, clipMaxY
+      );
+      if (!clipped) {
+        bs.exitedReach = true;
+        continue;
       }
 
-      const nextPt = [hit.srcX, hit.srcY];
-      bs.points.push(nextPt);
-      rasterizeStrokeSegmentIntoAlpha(this._liveMaskAlpha, rw, rh, rx, ry, bs.op, bs.radius, prev, nextPt);
-      this._liveDirty = true;
+      const segStart = bs.isOnePxBrush
+        ? [Math.floor(clipped.x0) + 0.5, Math.floor(clipped.y0) + 0.5]
+        : [roundMaskCoord(clipped.x0), roundMaskCoord(clipped.y0)];
+      const segEnd = bs.isOnePxBrush
+        ? [Math.floor(clipped.x1) + 0.5, Math.floor(clipped.y1) + 0.5]
+        : [roundMaskCoord(clipped.x1), roundMaskCoord(clipped.y1)];
+
+      const needsSplit = bs.exitedReach;
+      bs.exitedReach = clipped.clippedEnd;
+      this._appendStrokeSegment(bs, segStart, segEnd, needsSplit);
     }
 
     this.requestRender();
@@ -11143,6 +11570,12 @@ class EditorView {
   _finishBrushStroke(e = null) {
     const bs = this.brushState;
     if (!bs) return;
+
+    // Capture exact final endpoint via the same un-clamped reach clipping logic before closing stroke
+    if (e && typeof e.clientX === 'number' && typeof e.clientY === 'number' && !bs.limitReached) {
+      this._continueBrushStroke(e);
+    }
+
     this.brushState = null;
 
     if (bs.pointerId !== undefined) {
@@ -11155,33 +11588,20 @@ class EditorView {
 
     if (!this.draft) return;
 
-    // Capture exact final endpoint if pointerup arrived at a slightly different spot
-    if (e && typeof e.clientX === 'number' && typeof e.clientY === 'number' && !bs.limitReached) {
-      const hit = this._clientToSourcePoint(e.clientX, e.clientY, bs.locked);
-      this.hoverOutPos = { x: hit.outX, y: hit.outY };
-      const prev = bs.points[bs.points.length - 1];
-      if ((hit.srcX !== prev[0] || hit.srcY !== prev[1]) && bs.points.length < LIMITS.MAX_MASK_POINTS_PER_STROKE) {
-        const nextPt = [hit.srcX, hit.srcY];
-        bs.points.push(nextPt);
-        const { x: rx, y: ry, w: rw, h: rh } = bs.locked.region;
-        rasterizeStrokeSegmentIntoAlpha(this._liveMaskAlpha, rw, rh, rx, ry, bs.op, bs.radius, prev, nextPt);
-        this._liveDirty = true;
+    const newStrokes = [];
+    for (const rawPts of bs.subStrokes) {
+      if (!rawPts || rawPts.length === 0) continue;
+      let finalPoints = rawPts;
+      if (finalPoints.length > 32) {
+        const eps = bs.isOnePxBrush ? 0.1 : Math.min(0.35, Math.max(0.1, bs.radius * 0.04));
+        finalPoints = simplifyStrokePoints(finalPoints, eps);
       }
-    }
-
-    // Sub-pixel polyline simplification for long strokes (keeps exact endpoints)
-    let finalPoints = bs.points;
-    if (finalPoints.length > 32) {
-      const eps = Math.min(0.35, Math.max(0.1, bs.radius * 0.04));
-      finalPoints = simplifyStrokePoints(finalPoints, eps);
+      newStrokes.push({ op: bs.op, radius: bs.radius, points: finalPoints });
     }
 
     const existingStrokes = hasMaskStrokes(this.draft.mask) ? this.draft.mask.strokes : [];
     const candidateMask = {
-      strokes: [
-        ...existingStrokes,
-        { op: bs.op, radius: bs.radius, points: finalPoints }
-      ]
+      strokes: [...existingStrokes, ...newStrokes]
     };
 
     const budget = checkMaskBudget(this.app.store.project, this.cellKey, candidateMask);
@@ -13524,6 +13944,7 @@ class ModalsController {
       includeStrips: false,
       includeFrames: false,
       includeGuidesAndAnchors: true,
+      includeContentBounds: false,
       warningsConfirmed: false,
       largeExportConfirmed: false,
       report: null
@@ -13662,6 +14083,14 @@ class ModalsController {
             onChange: (e) => { state.includeGuidesAndAnchors = e.target.checked; }
           }),
           'Xuất kèm đường gióng (normalized) và anchor (pixel ô) trong JSON metadata'
+        ]));
+        body.appendChild(el('label', { className: 'form-row' }, [
+          el('input', {
+            type: 'checkbox',
+            checked: state.includeContentBounds,
+            onChange: (e) => { state.includeContentBounds = e.target.checked; }
+          }),
+          'Xuất kèm contentBoundsCellPx thực tế sau clip/tẩy (Atlas Metadata V2; mặc định V1 tương thích cũ)'
         ]));
       }
 
