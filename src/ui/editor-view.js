@@ -903,7 +903,7 @@ export class EditorView {
     this.requestRender();
   }
 
-  _appendStrokeSegment(bs, segStart, segEnd, forceNewSubStroke) {
+  _appendStrokeSegment(bs, segStart, segEnd, forceNewSubStroke, isFinal = false) {
     const { x: rx, y: ry, w: rw, h: rh } = bs.locked.region;
     const minDist = bs.isOnePxBrush ? 0.5 : Math.max(0.25, bs.radius * 0.12);
     const minDistSq = minDist * minDist;
@@ -919,7 +919,7 @@ export class EditorView {
     const prev = activePts[activePts.length - 1];
     const dx = segEnd[0] - prev[0];
     const dy = segEnd[1] - prev[1];
-    if (dx * dx + dy * dy < minDistSq) return;
+    if ((dx === 0 && dy === 0) || (!isFinal && dx * dx + dy * dy < minDistSq)) return;
 
     if (activePts.length >= LIMITS.MAX_MASK_POINTS_PER_STROKE) {
       const eps = bs.isOnePxBrush ? 0.1 : Math.min(0.35, Math.max(0.1, bs.radius * 0.04));
@@ -943,12 +943,12 @@ export class EditorView {
     this._liveDirty = true;
   }
 
-  _continueBrushStroke(e) {
+  _continueBrushStroke(e, isFinal = false) {
     const bs = this.brushState;
     if (!bs) return;
     if (e.pointerId !== undefined && bs.pointerId !== undefined && e.pointerId !== bs.pointerId) return;
 
-    const coalesced = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
+    const coalesced = !isFinal && typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : null;
     const events = coalesced && coalesced.length > 0 ? coalesced : [e];
     const { x: rx, y: ry, w: rw, h: rh } = bs.locked.region;
     const r = bs.radius;
@@ -986,7 +986,7 @@ export class EditorView {
 
       const needsSplit = bs.exitedReach;
       bs.exitedReach = clipped.clippedEnd;
-      this._appendStrokeSegment(bs, segStart, segEnd, needsSplit);
+      this._appendStrokeSegment(bs, segStart, segEnd, needsSplit, isFinal);
     }
 
     this.requestRender();
@@ -996,9 +996,9 @@ export class EditorView {
     const bs = this.brushState;
     if (!bs) return;
 
-    // Capture exact final endpoint via the same un-clamped reach clipping logic before closing stroke
+    // Preserve the clipped release point even if it is closer than the move-point threshold.
     if (e && typeof e.clientX === 'number' && typeof e.clientY === 'number' && !bs.limitReached) {
-      this._continueBrushStroke(e);
+      this._continueBrushStroke(e, true);
     }
 
     this.brushState = null;

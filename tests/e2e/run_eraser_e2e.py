@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sprite Sheet Builder — Per-Cell Eraser/Restore Mask E2E Test Suite (E01–E10).
+Sprite Sheet Builder — Per-Cell Eraser/Restore Mask E2E Test Suite (E01–E11).
 Runs against the built offline dist/sprite-sheet-builder.html over file:// on Windows 11 Chrome & Edge.
 Verifies real UI clicks/drags, DPR=2 accuracy, PNG/WebP pixel buffers, JSON metadata V1/V2,
 .ssb V2/V3 & IndexedDB Recovery round-trip, bad manifest rejection, post-op mask budgets,
@@ -1015,6 +1015,48 @@ def run_eraser_suite_for_browser(browser_name: str, executable_path: Path):
         except Exception as e:
             record("E10", False, str(e))
 
+        # E11: The final endpoint must survive the move-point threshold.
+        try:
+            with tempfile.TemporaryDirectory(prefix="ssb_short_stroke_") as temp_dir:
+                solid = Path(temp_dir) / "solid200.png"
+                Image.new("RGBA", (200, 200), (255, 60, 60, 255)).save(solid)
+                reset_project(page, cols=1, rows=1, cw=200, ch=200)
+                page.set_input_files("#file-import-single", str(solid))
+                page.evaluate("""async () => {
+                    const app = window.__SSB_APP__;
+                    const f = document.getElementById('file-import-single').files[0];
+                    await app.handleIncomingFiles([f], { targetCell: { row: 0, col: 0 }, directSingle: true });
+                    app.selectCell(0, 0);
+                }""")
+                page.wait_for_function("""() => {
+                    const app = window.__SSB_APP__;
+                    return Boolean(app.editorView._pointerGeom && app.assetManager.getAssetDrawableSync(
+                        app.store.project.assets[0], app.store.project.sources[0]));
+                }""", timeout=5000)
+                page.select_option("#ed-view-zoom", "1")
+                page.click("#btn-ed-tool-erase")
+                page.fill("#ed-brush-size-num", "128")
+                page.locator("#ed-brush-size-num").dispatch_event("change")
+                page.evaluate("() => window.__SSB_APP__.editorView.render()")
+
+                start = src_to_canvas_client(page, 90, 90)
+                end = src_to_canvas_client(page, 95, 90)
+                page.mouse.move(start["x"], start["y"])
+                page.mouse.down()
+                page.mouse.move(end["x"], end["y"])
+                page.mouse.up()
+                page.click("#btn-draft-apply")
+                _, png = download_bytes(lambda: page.evaluate(
+                    "() => window.__SSB_APP__.runExportJob({ type: 'atlas', format: 'image/png' })"
+                ))
+                _, pixels = load_rgba(png)
+                assert pixels[153, 90][3] == 0, "The start of the short stroke should be erased"
+                assert pixels[156, 90][3] == 0, "The final 5px movement must erase past the start circle"
+                assert pixels[160, 90][3] == 255, "The brush must not extend past the release circle"
+            record("E11", True, "128px brush dragged 5 source pixels preserves the endpoint in exported PNG")
+        except Exception as e:
+            record("E11", False, str(e))
+
         ctx.close()
 
     return {
@@ -1039,7 +1081,7 @@ def main():
     all_reports = []
     total_fail = 0
     for name, exe in targets:
-        print(f"\n=== Running Eraser E2E Suite (E01–E10) on Windows 11 {name} ===", flush=True)
+        print(f"\n=== Running Eraser E2E Suite (E01–E11) on Windows 11 {name} ===", flush=True)
         rep = run_eraser_suite_for_browser(name, exe)
         all_reports.append(rep)
         fails = [k for k, v in rep["results"].items() if v["status"] != "PASS"]
