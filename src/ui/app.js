@@ -186,7 +186,7 @@ export class SpriteSheetBuilderApp {
         this.recovery.cancelPendingSave();
       }
 
-      this._syncAllUI();
+      this._syncAllUI({ resetEditor: event.type === 'project-loaded' });
 
       // Schedule debounced recovery save pinned to current projectId (R4)
       if (event.type === 'commit' || event.type === 'undo' || event.type === 'redo') {
@@ -200,7 +200,7 @@ export class SpriteSheetBuilderApp {
     });
   }
 
-  _syncAllUI() {
+  _syncAllUI({ resetEditor = false } = {}) {
     const p = this.store.project;
     $('project-name-input').value = p.name;
     $('btn-undo').disabled = !this.store.canUndo() || this.isJobRunning;
@@ -255,7 +255,19 @@ export class SpriteSheetBuilderApp {
     // Render subviews
     this.renderLibrary();
     this.atlasView.requestRender();
-    this.editorView.loadCell(this.activeCellKey);
+    // An unrelated project commit (for example a rename) must not reset an
+    // unapplied edit or its local undo history. Replacement projects always
+    // reset the editor, even when opening a copy with matching IDs and cells.
+    const currentCell = p.cells[this.activeCellKey] || null;
+    const preserveDraft = !resetEditor &&
+      this.editorView.hasUnsavedDraft() &&
+      this.editorView.cellKey === this.activeCellKey &&
+      JSON.stringify(this.editorView.committedCell) === JSON.stringify(currentCell);
+    if (preserveDraft) {
+      this.editorView.requestRender();
+    } else {
+      this.editorView.loadCell(this.activeCellKey);
+    }
     this.animationView.onProjectChanged();
   }
 
@@ -607,9 +619,8 @@ export class SpriteSheetBuilderApp {
       showToast('Đang có tác vụ khác đang chạy — vui lòng chờ hoàn tất hoặc bấm Hủy.', 'warn');
       return;
     }
-    // Capture project & revision synchronously BEFORE any await (Spec §12.2, T21, R3)
+    // Keep the originating project across the draft prompt.
     const startProjectId = this.store.project.projectId;
-    const startRevision = this.store.revision;
 
     const okDraft = await this.ensureDraftResolved();
     if (!okDraft) return;
@@ -619,6 +630,9 @@ export class SpriteSheetBuilderApp {
       return;
     }
 
+    // Applying the draft is an intentional change. Detect only revisions
+    // made after that choice, while decoding the input.
+    const startRevision = this.store.revision;
     const job = this.beginJob(`Đang kiểm tra ${files.length} file ảnh...`, 'import');
     if (!job) return;
     const items = [];
@@ -682,6 +696,12 @@ export class SpriteSheetBuilderApp {
     // Revision / project guard for slow async decode (Spec §12.2, T21, R3)
     if (this.store.project.projectId !== startProjectId) {
       showToast('Project đã thay đổi trong lúc giải mã ảnh — kết quả cũ đã bị hủy an toàn.', 'warn');
+      return;
+    }
+
+    // A new draft made during decoding was not part of the first prompt.
+    if (this.editorView.hasUnsavedDraft()) {
+      showToast('Có bản nháp mới trong lúc nhập ảnh — hãy xử lý bản nháp rồi thử lại.', 'warn');
       return;
     }
 
@@ -1174,7 +1194,9 @@ export class SpriteSheetBuilderApp {
         showToast('Đã hủy mở project.', 'info');
         return;
       }
-      if (this.store.project.projectId !== startProjectId || this.store.revision !== startRevision) {
+      if (this.store.project.projectId !== startProjectId ||
+          this.store.revision !== startRevision ||
+          this.editorView.hasUnsavedDraft()) {
         showToast('Project hiện tại đã thay đổi trong lúc mở file — đã hủy ghi đè để bảo toàn dữ liệu.', 'warn', 5000);
         return;
       }
@@ -1260,6 +1282,11 @@ export class SpriteSheetBuilderApp {
     this.isJobRunning = true;
     this.activeAbortController = abortController;
 
+    // Editing a frame while its current project is being replaced gives
+    // the impression those edits will survive. Keep the cancel control
+    // accessible, but remove the editor from pointer and focus interaction.
+    if (kind === 'open') $('panel-right').inert = true;
+
     $('status-progress-wrap').classList.remove('hidden');
     $('status-progress-text').textContent = message;
     $('status-progress-bar').removeAttribute('value');
@@ -1286,6 +1313,7 @@ export class SpriteSheetBuilderApp {
   endJob(job = null) {
     // Stale job must NEVER clear state belonging to a newer job (R3)
     if (job && (!this.activeJob || this.activeJob.id !== job.id)) return;
+    if (this.activeJob?.kind === 'open') $('panel-right').inert = false;
     this.activeJob = null;
     this.isJobRunning = false;
     this.activeAbortController = null;
@@ -1732,6 +1760,8 @@ export class SpriteSheetBuilderApp {
 
       // Arrow keys: if an image cell is active and editor panel or stage focused -> nudge 1px / Shift 10px (or navigate grid if empty)
       if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+        // The global keyboard handler can otherwise bypass the inert editor.
+        if (this.activeJob?.kind === 'open') return;
         const step = e.shiftKey ? 10 : 1;
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
         const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;

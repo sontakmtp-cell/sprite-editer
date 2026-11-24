@@ -1177,6 +1177,177 @@ def run_suite_for_browser(browser_name: str, executable_path: Path):
         except Exception as e:
             record("R5", False, str(e))
 
+        # ------------------------------------------------------------------
+        # PR #1 follow-up: three user journeys missed by the original R2/R3 tests.
+        # ------------------------------------------------------------------
+        def import_first_frame():
+            page.set_input_files("#file-import-single", str(FIX / "t02_rect_400x200.png"))
+            page.evaluate("""async () => {
+                const f = document.getElementById('file-import-single').files[0];
+                await window.__SSB_APP__.handleIncomingFiles([f], { targetCell: { row: 0, col: 0 }, directSingle: true });
+            }""")
+            page.wait_for_function("() => Boolean(window.__SSB_APP__.store.project.cells['0:0'])")
+
+        def set_offset_x(value):
+            field = page.locator("#ed-offset-x")
+            field.fill(str(value))
+            field.press("Tab")  # commit the form field to the draft, not to the project
+
+        def rename_project(name):
+            field = page.locator("#project-name-input")
+            field.fill(name)
+            field.press("Tab")
+
+        try:
+            reset_project()
+            import_first_frame()
+            set_offset_x(12)
+            assert page.evaluate("() => window.__SSB_APP__.editorView.hasUnsavedDraft()")
+            rename_project("Đổi tên khi đang căn khung")
+            state = page.evaluate("""() => {
+                const app = window.__SSB_APP__;
+                return {
+                    name: app.store.project.name,
+                    draft: app.editorView.hasUnsavedDraft(),
+                    x: app.editorView.draft.offsetX,
+                    committedX: app.store.project.cells['0:0'].offsetX
+                };
+            }""")
+            assert state == {
+                "name": "Đổi tên khi đang căn khung", "draft": True, "x": 12, "committedX": 0
+            }, f"Rename must not discard or implicitly apply the frame draft: {state}"
+            assert not page.locator("#dialog-confirm").is_visible()
+            page.click("#btn-draft-apply")
+            assert page.evaluate("() => window.__SSB_APP__.store.project.cells['0:0'].offsetX") == 12
+            record("R7", True, "Project rename preserved unapplied X=12; explicit Apply still committed the offset")
+        except Exception as e:
+            record("R7", False, str(e))
+
+        try:
+            # Save a real archive with a frame, then switch back to a distinct live project.
+            reset_project()
+            import_first_frame()
+            rename_project("Archived project")
+            _, ssb_bytes = download_bytes(lambda: page.click("#btn-save-project"))
+            reset_project()
+            import_first_frame()
+            rename_project("Live project")
+            before_id = page.evaluate("() => window.__SSB_APP__.store.project.projectId")
+
+            def begin_paused_open():
+                page.evaluate("""() => {
+                    const mgr = window.__SSB_APP__.assetManager;
+                    const original = mgr._decodeBytesToBitmap;
+                    mgr._decodeBytesToBitmap = function (...args) {
+                        if (window.__SSB_APP__.activeJob?.kind !== 'open') return original.apply(this, args);
+                        return new Promise((resolve, reject) => {
+                            window.__r8ReleaseDecode = () => {
+                                mgr._decodeBytesToBitmap = original;
+                                delete window.__r8ReleaseDecode;
+                                Promise.resolve().then(() => original.apply(this, args)).then(resolve, reject);
+                            };
+                        });
+                    };
+                    window.__r8ResetDecode = () => {
+                        window.__r8ReleaseDecode?.();
+                        mgr._decodeBytesToBitmap = original;
+                        delete window.__r8ResetDecode;
+                    };
+                }""")
+                with page.expect_file_chooser() as chooser:
+                    page.click("#btn-open-project")
+                chooser.value.set_files({"name": "archive.ssb", "mimeType": "application/zip", "buffer": ssb_bytes})
+                page.get_by_role("button", name="Bỏ thay đổi và tiếp tục").click()
+                page.wait_for_function("() => typeof window.__r8ReleaseDecode === 'function'", timeout=5000)
+                assert page.evaluate("() => window.__SSB_APP__.activeJob?.kind") == "open"
+
+            try:
+                begin_paused_open()
+                # An actual click/keyboard sequence, not JavaScript changing the input.
+                field = page.locator("#ed-offset-x")
+                box = field.bounding_box()
+                assert box is not None
+                page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+                page.keyboard.press("Control+a")
+                page.keyboard.type("34")
+                page.keyboard.press("Tab")
+                blocked = page.evaluate("""() => {
+                    const app = window.__SSB_APP__;
+                    const input = document.getElementById('ed-offset-x');
+                    return !!input.closest('[inert]') && !app.editorView.hasUnsavedDraft() &&
+                        app.editorView.draft.offsetX === 0 && input.value === '0';
+                }""")
+                page.evaluate("() => window.__r8ReleaseDecode()")
+                page.wait_for_function("() => !window.__SSB_APP__.activeJob", timeout=5000)
+                assert blocked, "Frame editor accepted a new offset while a validated archive was opening"
+                assert page.evaluate("() => window.__SSB_APP__.store.project.name") == "Archived project"
+                assert page.evaluate("() => window.__SSB_APP__.store.project.projectId") != before_id
+                assert page.locator("#ed-offset-x").evaluate("el => !el.closest('[inert]')")
+            finally:
+                page.evaluate("() => window.__r8ResetDecode?.()")
+                page.wait_for_function("() => !window.__SSB_APP__.activeJob", timeout=5000)
+            # Defense in depth: if a pending programmatic edit bypasses the inert panel,
+            # the final replacement guard must keep the current project and that draft.
+            reset_project()
+            import_first_frame()
+            rename_project("Live project with pending edit")
+            before_id = page.evaluate("() => window.__SSB_APP__.store.project.projectId")
+            try:
+                begin_paused_open()
+                page.locator("#ed-offset-x").evaluate("""input => {
+                    input.value = '56';
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                }""")
+                assert page.evaluate("() => window.__SSB_APP__.editorView.hasUnsavedDraft()")
+                page.evaluate("() => window.__r8ReleaseDecode()")
+                page.wait_for_function("() => !window.__SSB_APP__.activeJob", timeout=5000)
+                state = page.evaluate("""() => {
+                    const app = window.__SSB_APP__;
+                    return [app.store.project.projectId, app.editorView.hasUnsavedDraft(), app.editorView.draft.offsetX];
+                }""")
+                assert state == [before_id, True, 56], f"Open replaced a newly dirty draft: {state}"
+                assert page.locator("#ed-offset-x").evaluate("el => !el.closest('[inert]')")
+            finally:
+                page.evaluate("() => window.__r8ResetDecode?.()")
+                page.wait_for_function("() => !window.__SSB_APP__.activeJob", timeout=5000)
+            record("R8", True, "Valid .ssb open blocked edits during paused decode; final guard preserved a separately introduced draft")
+        except Exception as e:
+            record("R8", False, str(e))
+
+        try:
+            reset_project()
+            import_first_frame()
+            set_offset_x(12)
+            page.set_input_files("#file-import-images", str(FIX / "t05_alpha_levels_90x60.png"))
+            # Synthetic drop carrying a real fixture File through the actual atlas drop handler.
+            page.evaluate("""() => {
+                const app = window.__SSB_APP__;
+                const dt = new DataTransfer();
+                dt.items.add(document.getElementById('file-import-images').files[0]);
+                const view = app.atlasView;
+                const rect = view.canvas.getBoundingClientRect();
+                const grid = app.store.project.grid;
+                view.stageWrap.dispatchEvent(new DragEvent('drop', {
+                    bubbles: true,
+                    cancelable: true,
+                    dataTransfer: dt,
+                    clientX: rect.left + 42 + (1.5 * grid.cellWidth * view.zoom),
+                    clientY: rect.top + 24 + (0.5 * grid.cellHeight * view.zoom)
+                }));
+            }""")
+            page.wait_for_selector("#dialog-confirm[open]", timeout=5000)
+            page.locator("#dialog-confirm").get_by_role("button", name="Áp dụng", exact=True).click()
+            page.wait_for_function("() => !window.__SSB_APP__.activeJob && !!window.__SSB_APP__.store.project.cells['0:1']", timeout=5000)
+            assert page.evaluate("""() => {
+                const app = window.__SSB_APP__;
+                const first = app.store.project.cells['0:0'];
+                const second = app.store.project.cells['0:1'];
+                return first.offsetX === 12 && first.assetId !== second.assetId && app.store.project.sources.length === 2;
+            }""")
+            record("R9", True, "Dropping a single File after Apply imported to the second slot and preserved the first frame's committed offset")
+        except Exception as e:
+            record("R9", False, str(e))
+
         ctx.close()
 
     return {
