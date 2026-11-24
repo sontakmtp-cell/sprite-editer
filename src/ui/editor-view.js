@@ -30,6 +30,7 @@ export class EditorView {
     this.previewScale = 1; // display CSS px per output pixel
     this.dragState = null;
     this._rafScheduled = false;
+    this.renderCount = 0;
 
     this._bindControls();
   }
@@ -248,6 +249,7 @@ export class EditorView {
 
   render() {
     if (!this.draft || !this.cellKey) return;
+    this.renderCount += 1;
     const project = this.app.store.project;
     const { cellWidth, cellHeight } = project.grid;
     const asset = this.app.store.getAsset(this.draft.assetId);

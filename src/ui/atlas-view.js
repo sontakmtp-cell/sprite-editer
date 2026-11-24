@@ -158,16 +158,12 @@ export class AtlasView {
         return;
       }
 
-      // Check draft guard before switching primary cell
-      if (hit.key !== this.app.activeCellKey && !e.ctrlKey && !e.shiftKey) {
-        const ok = await this.app.ensureDraftResolved();
-        if (!ok) return;
-      }
-
-      this.app.selectCell(hit.row, hit.col, {
+      // Unified selection path with draft guard (R2: handles click, re-click, Ctrl+click, Shift+click)
+      const okSel = await this.app.selectCellWithGuard(hit.row, hit.col, {
         ctrl: e.ctrlKey || e.metaKey,
         shift: e.shiftKey
       });
+      if (!okSel) return;
 
       // Prepare cell drag if occupied
       if (this.app.store.project.cells[hit.key] && !e.shiftKey) {
@@ -222,10 +218,7 @@ export class AtlasView {
       if (this.marqueeState) {
         const ms = this.marqueeState;
         this.marqueeState = null;
-        const ok = await this.app.ensureDraftResolved();
-        if (ok) {
-          this.app.selectRectRange(ms.startRow, ms.startCol, ms.curRow, ms.curCol);
-        }
+        await this.app.selectRectRangeWithGuard(ms.startRow, ms.startCol, ms.curRow, ms.curCol);
         this.requestRender();
         return;
       }
@@ -247,9 +240,8 @@ export class AtlasView {
     this.canvas.addEventListener('dblclick', async (e) => {
       const hit = this.screenToCell(e.clientX, e.clientY);
       if (!hit) return;
-      const ok = await this.app.ensureDraftResolved();
+      const ok = await this.app.selectCellWithGuard(hit.row, hit.col);
       if (!ok) return;
-      this.app.selectCell(hit.row, hit.col);
       if (this.app.store.project.cells[hit.key]) {
         this.app.focusEditorPanel();
       } else {
@@ -263,9 +255,8 @@ export class AtlasView {
       const hit = this.screenToCell(e.clientX, e.clientY);
       if (!hit) return;
       if (!this.app.selectedCells.has(hit.key)) {
-        const ok = await this.app.ensureDraftResolved();
+        const ok = await this.app.selectCellWithGuard(hit.row, hit.col);
         if (!ok) return;
-        this.app.selectCell(hit.row, hit.col);
       }
       this.app.openContextMenu(e.clientX, e.clientY, hit.row, hit.col);
     });

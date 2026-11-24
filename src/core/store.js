@@ -657,6 +657,8 @@ export class ProjectStore {
     const key = cellKey(row, col);
     return this.commit(label, (p) => {
       if (!isCellInGrid(row, col, p.grid)) return false;
+      const asset = p.assets.find((a) => a.id === cellData?.assetId);
+      if (!asset || !p.sources.some((s) => s.id === asset.sourceId)) return false;
       p.cells[key] = deepClone(cellData);
     });
   }
@@ -713,10 +715,35 @@ export class ProjectStore {
   }
 
   pasteCells(pastePlan, label = 'Dán nội dung ô') {
+    if (!Array.isArray(pastePlan) || pastePlan.length === 0) {
+      return { committed: false, missingAssetIds: [] };
+    }
+    const validAssetMap = new Map(this.project.assets.map((a) => [a.id, a]));
+    const validSourceIds = new Set(this.project.sources.map((s) => s.id));
+    const missingAssetIds = [];
+    for (const item of pastePlan) {
+      if (!isCellInGrid(item.row, item.col, this.project.grid)) continue;
+      const aid = item.cell?.assetId;
+      const asset = aid ? validAssetMap.get(aid) : null;
+      if (!asset || !validSourceIds.has(asset.sourceId)) {
+        if (aid && !missingAssetIds.includes(aid)) missingAssetIds.push(aid);
+        else if (!aid && !missingAssetIds.includes('(trống)')) missingAssetIds.push('(trống)');
+      }
+    }
+    if (missingAssetIds.length > 0) {
+      return { committed: false, missingAssetIds };
+    }
+
     return this.commit(label, (p) => {
+      const assetSet = new Set(p.assets.map((a) => a.id));
+      const sourceSet = new Set(p.sources.map((s) => s.id));
       let count = 0;
       for (const item of pastePlan) {
         if (!isCellInGrid(item.row, item.col, p.grid)) continue;
+        const asset = p.assets.find((a) => a.id === item.cell?.assetId);
+        if (!asset || !assetSet.has(asset.id) || !sourceSet.has(asset.sourceId)) {
+          return false;
+        }
         p.cells[cellKey(item.row, item.col)] = deepClone(item.cell);
         count++;
       }

@@ -98,36 +98,93 @@ def benchmark_browser(name: str, exe: Path):
             page.wait_for_function("() => Object.keys(window.__SSB_APP__.store.project.cells).length === 73", timeout=60000)
             import_times.append((time.perf_counter() - t0) * 1000)
 
-        # 3. Continuous 5-second drag response latency on cached cell in Hatch Pet V2 (measure input->rAF render p95)
+        # 3. Continuous 5-second REAL pointer drag on cached cell in Hatch Pet V2 (R6 fix):
+        # Uses genuine Playwright mouse pointer input (pointerdown + pointermove with real pointer capture),
+        # verifies draft offsetX/offsetY actually changes on every move, verifies EditorView.render() ran,
+        # and verifies actual #editor-canvas pixel data changed!
         page.evaluate("() => window.__SSB_APP__.selectCell(0, 0)")
         page.wait_for_timeout(300)  # warm cache for cell 0:0
-        drag_metrics = page.evaluate("""async () => {
-            const canvas = document.getElementById('editor-canvas');
-            const rect = canvas.getBoundingClientRect();
-            const cx = rect.left + rect.width / 2;
-            const cy = rect.top + rect.height / 2;
-            canvas.dispatchEvent(new PointerEvent('pointerdown', { clientX: cx, clientY: cy, button: 0, pointerId: 1, bubbles: true }));
+        box = page.locator("#editor-canvas").bounding_box()
+        assert box and box["width"] > 20 and box["height"] > 20
+        cx = box["x"] + box["width"] / 2.0
+        cy = box["y"] + box["height"] / 2.0
 
-            const latencies = [];
-            const start = performance.now();
-            let step = 0;
-            while (performance.now() - start < 5000) {
-                step++;
-                const tIn = performance.now();
-                const dx = Math.sin(step * 0.2) * 30;
-                const dy = Math.cos(step * 0.2) * 20;
-                canvas.dispatchEvent(new PointerEvent('pointermove', { clientX: cx + dx, clientY: cy + dy, button: 0, pointerId: 1, bubbles: true }));
-                await new Promise(r => requestAnimationFrame(r));
-                latencies.push(performance.now() - tIn);
-            }
-            canvas.dispatchEvent(new PointerEvent('pointerup', { clientX: cx, clientY: cy, button: 0, pointerId: 1, bubbles: true }));
-            window.__SSB_APP__.editorView.discardDraft();
-
-            latencies.sort((a, b) => a - b);
-            const p95 = latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95))];
-            const median = latencies[Math.floor(latencies.length / 2)];
-            return { frames: latencies.length, median_ms: median, p95_ms: p95, max_ms: latencies[latencies.length - 1] };
+        # Capture canvas pixel fingerprint before drag
+        before_hash = page.evaluate("""() => {
+            const c = document.getElementById('editor-canvas');
+            const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+            let h = 0;
+            for (let i = 0; i < d.length; i += 97) h = ((h * 31) + d[i]) | 0;
+            return h;
         }""")
+
+        # Instrument in-page pointermove -> rAF paint latency measurement for real mouse events
+        page.evaluate("""() => {
+            const c = document.getElementById('editor-canvas');
+            window.__DRAG_SAMPLES__ = [];
+            window.__DRAG_HANDLER__ = () => {
+                const tIn = performance.now();
+                const rcBefore = window.__SSB_APP__.editorView.renderCount;
+                const ox = window.__SSB_APP__.editorView.draft?.offsetX ?? 0;
+                const oy = window.__SSB_APP__.editorView.draft?.offsetY ?? 0;
+                requestAnimationFrame(() => {
+                    const dt = performance.now() - tIn;
+                    const rcAfter = window.__SSB_APP__.editorView.renderCount;
+                    window.__DRAG_SAMPLES__.push({ dt, rendered: rcAfter > rcBefore, ox, oy });
+                });
+            };
+            c.addEventListener('pointermove', window.__DRAG_HANDLER__);
+        }""")
+
+        page.mouse.move(cx, cy)
+        page.mouse.down()
+        import math
+        drag_start = time.perf_counter()
+        step = 0
+        while time.perf_counter() - drag_start < 5.0:
+            step += 1
+            dx = math.sin(step * 0.25) * 35.0
+            dy = math.cos(step * 0.25) * 25.0
+            page.mouse.move(cx + dx, cy + dy, steps=1)
+            page.wait_for_timeout(14)
+
+        # Verify canvas pixel fingerprint changed at peak offset before releasing
+        page.mouse.move(cx + 42.0, cy + 28.0, steps=1)
+        page.wait_for_timeout(40)
+        after_check = page.evaluate("""() => {
+            const c = document.getElementById('editor-canvas');
+            const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+            let h = 0;
+            for (let i = 0; i < d.length; i += 97) h = ((h * 31) + d[i]) | 0;
+            const ev = window.__SSB_APP__.editorView;
+            return { hash: h, ox: ev.draft?.offsetX ?? 0, oy: ev.draft?.offsetY ?? 0, renderCount: ev.renderCount };
+        }""")
+        page.mouse.up()
+
+        drag_metrics = page.evaluate("""() => {
+            const c = document.getElementById('editor-canvas');
+            c.removeEventListener('pointermove', window.__DRAG_HANDLER__);
+            const samples = window.__DRAG_SAMPLES__ || [];
+            window.__SSB_APP__.editorView.discardDraft();
+            const dts = samples.map(s => s.dt).sort((a, b) => a - b);
+            const renderedCount = samples.filter(s => s.rendered).length;
+            const uniqueOffsets = new Set(samples.map(s => s.ox.toFixed(2) + ',' + s.oy.toFixed(2))).size;
+            const p95 = dts.length ? dts[Math.min(dts.length - 1, Math.floor(dts.length * 0.95))] : 0;
+            const median = dts.length ? dts[Math.floor(dts.length / 2)] : 0;
+            return {
+                frames: dts.length,
+                renderedCount,
+                uniqueOffsets,
+                median_ms: median,
+                p95_ms: p95,
+                max_ms: dts.length ? dts[dts.length - 1] : 0
+            };
+        }""")
+        assert after_check["hash"] != before_hash, "Editor canvas pixels did not visually change during real drag!"
+        assert abs(after_check["ox"]) > 10.0 and abs(after_check["oy"]) > 5.0, f"Draft offsets did not update during real drag: {after_check}"
+        assert drag_metrics["uniqueOffsets"] >= 20, f"Expected continuous offset updates, got {drag_metrics}"
+        assert drag_metrics["renderedCount"] >= 20, f"Expected real canvas renders during drag, got {drag_metrics}"
+        drag_metrics["pixels_verified_changed"] = True
         drag_p95_list.append(drag_metrics)
 
         # 4. Preview 12 FPS, 8-frame group (running-right) warm cache stability check
@@ -212,7 +269,11 @@ def benchmark_browser(name: str, exe: Path):
         "open_html_offline": summarize(open_times),
         "import_73_1024_png": summarize(import_times),
         "drag_5s_cached_cell": {
+            "mode": "real-playwright-pointer-with-pixel-verification",
             "frames": drag_metrics["frames"],
+            "rendered_frames": drag_metrics["renderedCount"],
+            "unique_offsets": drag_metrics["uniqueOffsets"],
+            "pixels_verified_changed": drag_metrics["pixels_verified_changed"],
             "median_ms": round(drag_metrics["median_ms"], 2),
             "p95_ms": round(drag_metrics["p95_ms"], 2),
             "max_ms": round(drag_metrics["max_ms"], 2),

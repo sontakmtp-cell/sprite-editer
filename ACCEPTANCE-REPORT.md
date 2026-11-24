@@ -1,7 +1,7 @@
 # Báo cáo nghiệm thu (Acceptance Report) — Sprite Sheet Builder V2.0
 
 **Ngày kiểm thử:** 2026-11-24  
-**Bản build kiểm thử:** `dist/sprite-sheet-builder.html` (`478.264 bytes` / `467,1 KiB`, 21 module, 0 runtime dependency, mục tiêu `< 1 MiB`)
+**Bản build kiểm thử:** `dist/sprite-sheet-builder.html` (`491.696 bytes` / `480,2 KiB`, 21 module, 0 runtime dependency, mục tiêu `< 1 MiB`)
 
 ---
 
@@ -24,12 +24,12 @@
 ## 2. Lệnh chạy kiểm thử đã thực thi
 
 ```bash
-npm run build           # Build dist/sprite-sheet-builder.html (467.1 KiB)
-npm run test:unit       # 12/12 PASS (140 ms)
+npm run build           # Build dist/sprite-sheet-builder.html (480.2 KiB)
+npm run test:unit       # 14/14 PASS (198 ms, gồm R1 & R4)
 npm run test:fixtures   # Sinh bộ fixture tổng hợp trong tests/fixtures/generated/
-npm run test:e2e        # Chrome 158: 27/27 PASS (0 network req, 0 page errors)
-                        # Edge   158: 27/27 PASS (0 network req, 0 page errors)
-npm run test:perf       # Đo T28 (3 lượt/kịch bản) trên cả Chrome 158 và Edge 158
+npm run test:e2e        # Chrome 158: 32/32 PASS (T01–T27 + R1–R5, 0 network req, 0 page errors)
+                        # Edge   158: 32/32 PASS (T01–T27 + R1–R5, 0 network req, 0 page errors)
+npm run test:perf       # Đo T28 + R6 (chuột thật Playwright + xác minh đổi offset & pixel canvas) trên Chrome 158 & Edge 158
 ```
 
 Kết quả JSON chi tiết được lưu tại:
@@ -69,7 +69,13 @@ Kết quả JSON chi tiết được lưu tại:
 | **T25** | **PASS** | E2E (`1280×720`) | Tại cửa sổ `1280×720`, nút **Lưu** và **Xuất...** hiển thị trọn vẹn trong khung (`export right = 1270 px ≤ 1280 px`); gõ `Backspace` trong ô tên project không kích hoạt xóa ô. |
 | **T26** | **PASS** | Unit + E2E Pixel | Ảnh JPEG `100×200` gốc có EXIF Orientation `6` (xoay 90° CW) được đọc & xuất đúng kích thước `200×100` (nửa trái xanh dương, nửa phải đỏ); chuyển đổi giao diện Tối ↔ Sáng cho file PNG xuất **giống nhau từng byte**. |
 | **T27** | **PASS** | E2E | Xuất Atlas PNG khi project chưa lưu giữ nguyên trạng thái `isDirty = true` và nhãn `• Chưa lưu`; xuất ảnh không bao giờ đánh dấu project đã lưu. |
-| **T28** | **PASS** | Perf Benchmark | Đo ≥ 3 lượt mỗi kịch bản trên cả Chrome 158 và Edge 158 — đạt toàn bộ mục tiêu §12.4 (chi tiết bảng mục 4 bên dưới). |
+| **T28** | **PASS** | Perf Benchmark | Đo ≥ 3 lượt mỗi kịch bản trên cả Chrome 158 và Edge 158 (kèm R6 dùng chuột thật Playwright + kiểm chứng đổi tọa độ & pixel canvas) — đạt toàn bộ mục tiêu §12.4 (chi tiết mục 4). |
+| **R1** | **PASS** | Unit + E2E | Chặn dán clipboard tham chiếu asset đã xóa ngay tại `store.pasteCells` & `app.pasteClipboard` (project vẫn lưu `.ssb` hợp lệ); Undo xóa asset thì dán lại thành công; tự xóa clipboard ô khi New/Open project. |
+| **R2** | **PASS** | E2E | Gom luồng chọn ô về `selectCellWithGuard` / `selectRectRangeWithGuard`: nhấp lại cùng ô giữ nguyên bản nháp không hiện dialog; Ctrl+click / Shift+click / kéo chọn sang ô khác đều bật hộp thoại Áp dụng / Hủy bản nháp / Tiếp tục sửa. |
+| **R3** | **PASS** | E2E | Khóa độc quyền 1 job thay đổi project/IO tại một thời điểm với token riêng (`activeJob`); khóa nút New/Open khi đang chạy job; kiểm tra Hủy & revision sau từng ảnh giải mã (kể cả ảnh cuối) và ngay trước commit; job cũ không xóa trạng thái job mới. |
+| **R4** | **PASS** | Unit + E2E (IDB) | Hủy timer autosave theo `projectId` ngay khi New/Open/Restore; đóng gói tuần tự qua hàng đợi `_opQueue`; kiểm tra đủ 100% nguồn nhị phân trước khi chạm IDB và ghi nguồn + marker + dọn rác trong **1 giao dịch IDB `readwrite` duy nhất**. |
+| **R5** | **PASS** | E2E | Kiểm tra `File.size` (0 byte hoặc `> 512 MiB`) ở đầu `openProjectFile` **trước** hộp thoại bỏ thay đổi và **trước** `file.arrayBuffer()` (đã kiểm chứng với file giả 600 MiB: `arrayBuffer()` không hề bị gọi). |
+| **R6** | **PASS** | Perf (Real Pointer) | Thay `dispatchEvent` tổng hợp bằng `page.mouse` thật trên `#editor-canvas`, xác nhận `draft.offsetX/offsetY` thay đổi thực sự (`147–148` tọa độ khác nhau), `EditorView.render()` thực thi (`146–147` khung), và dữ liệu pixel canvas thực sự dịch chuyển. |
 
 ---
 
@@ -79,13 +85,13 @@ Fixture: 73 ảnh PNG `1024×1024` RGBA tổng hợp (`2,96 MiB` nén trên đĩ
 
 | Kịch bản (§12.4) | Mục tiêu | Chrome 158 (Median / Worst) | Edge 158 (Median / Worst) | Kết luận |
 |---|---|---:|---:|---|
-| Mở HTML offline (`file://`), chưa có project | `≤ 2.000 ms` | **157,5 ms** / 185,5 ms | **177,2 ms** / 178,5 ms | **ĐẠT** |
-| Nhập 73 PNG `1024×1024` RGBA (`≤ 100 MiB`) | `≤ 30.000 ms` | **738,4 ms** / 747,5 ms | **604,0 ms** / 618,4 ms | **ĐẠT** |
-| Kéo liên tục 5 giây ô đã cache (Hatch Pet V2) | `p95 ≤ 50 ms` | **p95 = 18,0 ms** (med 16,7 / max 23,9 ms; 302 frame) | **p95 = 17,6 ms** (med 16,7 / max 24,6 ms; 302 frame) | **ĐẠT** |
-| Preview 12 FPS, nhóm 8 frame đã warm cache | Đúng thứ tự, không rò RAM | 19 chuyển frame / 1,5 s, chuỗi `[0..7, 0..3]`, cache phẳng `63,49 Mi px` | 18 chuyển frame / 1,5 s, chuỗi `[0..7, 0..3]`, cache phẳng `≤ 63,49 Mi px` | **ĐẠT** |
-| Xuất PNG atlas `1536×2288` từ project 73 frame | `≤ 10.000 ms` | **532,8 ms** / 535,0 ms | **543,1 ms** / 553,9 ms | **ĐẠT** |
-| Lưu `.ssb` project 73 frame | `≤ 30.000 ms` | **151,6 ms** / 178,1 ms | **132,5 ms** / 153,6 ms | **ĐẠT** |
-| Mở `.ssb` project 73 frame | `≤ 30.000 ms` | **673,4 ms** / 674,3 ms | **577,2 ms** / 586,6 ms | **ĐẠT** |
+| Mở HTML offline (`file://`), chưa có project | `≤ 2.000 ms` | **158,8 ms** / 161,9 ms | **192,5 ms** / 211,0 ms | **ĐẠT** |
+| Nhập 73 PNG `1024×1024` RGBA (`≤ 100 MiB`) | `≤ 30.000 ms` | **577,5 ms** / 596,9 ms | **589,8 ms** / 589,9 ms | **ĐẠT** |
+| Kéo liên tục 5 giây chuột thật trên ô đã cache (R6) | `p95 ≤ 50 ms` | **p95 = 0,9 ms** (med 0,5 / max 3,5 ms; 147 mẫu, 146 render, pixel đổi) | **p95 = 0,8 ms** (med 0,4 / max 2,1 ms; 148 mẫu, 147 render, pixel đổi) | **ĐẠT** |
+| Preview 12 FPS, nhóm 8 frame đã warm cache | Đúng thứ tự, không rò RAM | 18 chuyển frame / 1,5 s, chuỗi `[0..7, 0..3]`, cache phẳng `63,49 Mi px` | 18 chuyển frame / 1,5 s, chuỗi `[0..7, 0..3]`, cache phẳng `63,49 Mi px` | **ĐẠT** |
+| Xuất PNG atlas `1536×2288` từ project 73 frame | `≤ 10.000 ms` | **537,6 ms** / 568,1 ms | **509,7 ms** / 622,9 ms | **ĐẠT** |
+| Lưu `.ssb` project 73 frame | `≤ 30.000 ms` | **134,6 ms** / 193,6 ms | **139,1 ms** / 169,0 ms | **ĐẠT** |
+| Mở `.ssb` project 73 frame | `≤ 30.000 ms` | **620,1 ms** / 645,5 ms | **582,9 ms** / 601,9 ms | **ĐẠT** |
 
 **Kiểm tra thu hồi cache sau benchmark:** Cache LRU giới hạn cứng `67.108.864 px` (`64 Mi px`), ghi nhận `356` lần thu hồi trên Chrome và `360` lần trên Edge, mức còn lại cuối phiên chỉ `1,0–2,0 Mi px` (không rò rỉ bitmap).
 
