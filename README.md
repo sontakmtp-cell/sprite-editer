@@ -2,6 +2,10 @@
 
 Ứng dụng web chạy **hoàn toàn offline** (một file HTML duy nhất), dành cho nhà làm game trên Windows 11 (Chrome / Edge desktop) để biến ảnh nhân vật rời, animation strip hoặc sprite atlas có sẵn thành **sprite sheet dạng lưới đều**, căn chỉnh hình học chính xác, xem thử animation, lưu project `.ssb` để chỉnh tiếp và xuất tài nguyên.
 
+![Giao diện Sprite Sheet Builder: lưới Sprite Atlas 6×8 ô 512×512 ở giữa, Thư viện ảnh bên trái, Chỉnh sửa frame bên phải và Preview Animation & Timeline bên dưới](docs/screenshot.png)
+
+*Giao diện làm việc thực tế: lưới Sprite Atlas ở giữa, Thư viện ảnh bên trái, panel Chỉnh sửa frame (Fit Alpha, Anchor, Onion Skin) bên phải và Preview Animation & Timeline ở dưới.*
+
 ---
 
 ## 1. Cách mở và sử dụng ngay (Không cần cài đặt hay Node.js)
