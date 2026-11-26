@@ -11,6 +11,7 @@ import { $ } from './dom-helpers.js';
 
 const HEADER_W = 42;
 const HEADER_H = 24;
+const PREVIEW_MARGIN = 128;
 
 export class AtlasView {
   constructor(app) {
@@ -35,6 +36,8 @@ export class AtlasView {
 
     this._rafScheduled = false;
     this._warningCells = new Set();
+    this._previewState = null;
+    this._paintingPreviews = false;
 
     this._bindEvents();
   }
@@ -312,6 +315,66 @@ export class AtlasView {
     });
   }
 
+  async _paintPreviews() {
+    if (this._paintingPreviews) return;
+    this._paintingPreviews = true;
+    const manager = this.app.assetManager;
+    let batchStart = performance.now();
+
+    try {
+      while (this._previewState.queue.length > 0) {
+        const state = this._previewState;
+        const job = state.queue.shift();
+        const { entry, key, cell, asset, source, x, y, right, bottom, originX, originY } = job;
+        const isCurrent = () => this._previewState === state &&
+          this.app.store.project === state.project && state.entries.get(key) === entry && entry.job === job;
+        if (!isCurrent()) continue;
+        job.started = true;
+
+        let preview = null;
+        try {
+          const analysis = cell.fitMode === 'alpha'
+            ? await manager.analyzeCellPixels(asset, source, cell.alphaThreshold, cell.mask)
+            : null;
+          if (isCurrent() && (cell.fitMode !== 'alpha' || analysis?.alphaBounds)) {
+            await manager.withPreviewDrawable(asset, source, cell.mask, (drawable) => {
+              if (!isCurrent()) return;
+              const canvas = document.createElement('canvas');
+              canvas.width = right - x;
+              canvas.height = bottom - y;
+              const ctx = canvas.getContext('2d');
+              ctx.setTransform(state.scale, 0, 0, state.scale, originX - x, originY - y);
+              drawCellOnContext(ctx, {
+                cellWidth: state.project.grid.cellWidth,
+                cellHeight: state.project.grid.cellHeight,
+                region: asset.region,
+                transform: cell,
+                alphaBounds: analysis?.alphaBounds || null,
+                drawable,
+                smoothing: state.project.settings.smoothing
+              });
+              preview = canvas;
+            });
+          }
+        } catch {
+          // A failed decode ends this request. A repaint alone must not retry it.
+        }
+        if (isCurrent()) {
+          entry.preview = preview ? { canvas: preview, x, y } : null;
+          job.complete = true;
+          this.requestRender();
+        }
+
+        if (performance.now() - batchStart >= 8) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          batchStart = performance.now();
+        }
+      }
+    } finally {
+      this._paintingPreviews = false;
+    }
+  }
+
   render() {
     const project = this.app.store.project;
     const { cols, rows, cellWidth, cellHeight } = project.grid;
@@ -339,6 +402,17 @@ export class AtlasView {
     const scrollT = this.stageWrap.scrollTop;
     const viewW = this.stageWrap.clientWidth || cssW;
     const viewH = this.stageWrap.clientHeight || cssH;
+    const scale = dpr * z;
+    // Use device-pixel rectangles so the preview can be copied back without resampling.
+    // Align the buffered viewport to a grid so small scrolls reuse the same previews.
+    const previewLeft = Math.max(0, (Math.floor(scrollL / PREVIEW_MARGIN) - 1) * PREVIEW_MARGIN * dpr);
+    const previewTop = Math.max(0, (Math.floor(scrollT / PREVIEW_MARGIN) - 1) * PREVIEW_MARGIN * dpr);
+    const previewRight = Math.min(targetW, (Math.ceil((scrollL + viewW) / PREVIEW_MARGIN) + 1) * PREVIEW_MARGIN * dpr);
+    const previewBottom = Math.min(targetH, (Math.ceil((scrollT + viewH) / PREVIEW_MARGIN) + 1) * PREVIEW_MARGIN * dpr);
+    if (this._previewState?.project !== project || this._previewState.z !== z || this._previewState.dpr !== dpr) {
+      this._previewState = { project, z, dpr, scale, entries: new Map(), queue: [] };
+    }
+    const state = this._previewState;
 
     const visMinCol = Math.max(0, Math.floor((scrollL - HEADER_W) / (cellWidth * z)) - 1);
     const visMaxCol = Math.min(cols - 1, Math.ceil((scrollL + viewW - HEADER_W) / (cellWidth * z)) + 1);
@@ -368,7 +442,8 @@ export class AtlasView {
     }
 
     const expectedSet = project.expectedCells ? new Set(project.expectedCells) : null;
-    const needDecodeAssets = [];
+    const previewKeys = new Set();
+    const queue = [];
 
     // Draw visible cells in atlas coordinate space scaled by z
     ctx.save();
@@ -388,35 +463,36 @@ export class AtlasView {
           ctx.fillRect(ox, oy, cellWidth, cellHeight);
         }
 
+        const originX = HEADER_W * dpr + ox * scale;
+        const originY = HEADER_H * dpr + oy * scale;
+        const x = Math.floor(Math.max(previewLeft, originX));
+        const y = Math.floor(Math.max(previewTop, originY));
+        const right = Math.ceil(Math.min(previewRight, originX + cellWidth * scale));
+        const bottom = Math.ceil(Math.min(previewBottom, originY + cellHeight * scale));
         const cell = project.cells[key];
-        if (cell) {
+        if (cell && x < right && y < bottom) {
           const asset = project.assets.find((a) => a.id === cell.assetId);
           const source = asset ? project.sources.find((s) => s.id === asset.sourceId) : null;
           if (asset && source) {
-            const drawable = this.app.assetManager.getCellDrawableSync(asset, source, cell.mask);
-            if (drawable) {
-              const alphaInfo =
-                cell.fitMode === 'alpha'
-                  ? this.app.assetManager.getCachedCellPixelAnalysis(asset, cell.alphaThreshold, cell.mask)
-                  : null;
-              if (cell.fitMode === 'alpha' && !alphaInfo) {
-                needDecodeAssets.push({ asset, source, cell });
-              } else if (!(cell.fitMode === 'alpha' && !alphaInfo?.alphaBounds)) {
-                drawCellOnContext(ctx, {
-                  cellWidth,
-                  cellHeight,
-                  originX: ox,
-                  originY: oy,
-                  region: asset.region,
-                  transform: cell,
-                  alphaBounds: alphaInfo?.alphaBounds || null,
-                  drawable,
-                  smoothing: project.settings.smoothing
-                });
-              }
-            } else {
-              needDecodeAssets.push({ asset, source, cell });
-              // Subtle loading placeholder
+            previewKeys.add(key);
+            let entry = state.entries.get(key);
+            if (!entry) {
+              entry = { job: null, preview: null };
+              state.entries.set(key, entry);
+            }
+            const job = entry.job;
+            if (!job || job.x !== x || job.y !== y || job.right !== right || job.bottom !== bottom) {
+              entry.job = { entry, key, cell, asset, source, x, y, right, bottom, originX, originY };
+            }
+            if (!entry.job.started) queue.push(entry.job);
+
+            if (entry.preview) {
+              const { canvas, x: previewX, y: previewY } = entry.preview;
+              ctx.save();
+              ctx.resetTransform();
+              ctx.drawImage(canvas, previewX, previewY);
+              ctx.restore();
+            } else if (!entry.job.complete) {
               ctx.fillStyle = 'rgba(59, 130, 246, 0.12)';
               ctx.fillRect(ox + 2, oy + 2, cellWidth - 4, cellHeight - 4);
             }
@@ -527,23 +603,10 @@ export class AtlasView {
       }
     }
 
-    // Trigger lazy decode for visible uncached cells (revision-guarded)
-    if (needDecodeAssets.length > 0) {
-      const projId = project.projectId;
-      for (const item of needDecodeAssets) {
-        this.app.assetManager.getCellDrawable(item.asset, item.source, item.cell.mask).then(() => {
-          if (this.app.store.project.projectId === projId) {
-            this.requestRender();
-          }
-        }).catch(() => {});
-        if (item.cell.fitMode === 'alpha') {
-          this.app.assetManager.analyzeCellPixels(item.asset, item.source, item.cell.alphaThreshold, item.cell.mask).then(() => {
-            if (this.app.store.project.projectId === projId) {
-              this.requestRender();
-            }
-          }).catch(() => {});
-        }
-      }
+    for (const key of state.entries.keys()) {
+      if (!previewKeys.has(key)) state.entries.delete(key);
     }
+    state.queue = queue;
+    if (queue.length > 0) this._paintPreviews();
   }
 }

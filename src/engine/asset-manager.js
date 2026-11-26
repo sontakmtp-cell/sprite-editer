@@ -338,9 +338,8 @@ export class AssetManager {
   }
 
   /**
-   * Apply a vector erase/restore mask onto an isolated crop-sized canvas using Canvas 2D
-   * `destination-in` alpha compositing BEFORE any scaling, smoothing, or destination cell clip.
-   * Never mutates source bytes or shared unmasked region bitmaps.
+   * Apply erase/restore in source pixels before scaling. Only the area touched by the
+   * eraser needs an alpha buffer. Restored pixels keep the original source alpha.
    */
   _composeMaskedRegionCanvas(baseDrawable, region, mask) {
     const { x, y, w, h } = region;
@@ -352,27 +351,38 @@ export class AssetManager {
     const dr = baseDrawable.drawRegion;
     outCtx.drawImage(baseDrawable.bitmap, dr.x, dr.y, dr.w, dr.h, 0, 0, w, h);
 
-    const maskAlpha = rasterizeMaskAlpha(w, h, x, y, mask.strokes);
-    const maskCanvas = document.createElement('canvas');
-    maskCanvas.width = w;
-    maskCanvas.height = h;
-    const maskCtx = maskCanvas.getContext('2d', { alpha: true });
-    const imgData = maskCtx.createImageData(w, h);
-    const data = imgData.data;
-    for (let i = 0; i < maskAlpha.length; i++) {
-      const a = maskAlpha[i];
-      if (a !== 0) {
-        const o = i * 4;
-        data[o] = 255;
-        data[o + 1] = 255;
-        data[o + 2] = 255;
-        data[o + 3] = a;
+    let left = x + w;
+    let top = y + h;
+    let right = x;
+    let bottom = y;
+    for (const stroke of mask.strokes) {
+      if (stroke.op !== 'erase') continue;
+      for (const [px, py] of stroke.points) {
+        left = Math.min(left, Math.floor(px - stroke.radius));
+        top = Math.min(top, Math.floor(py - stroke.radius));
+        right = Math.max(right, Math.floor(px + stroke.radius) + 1);
+        bottom = Math.max(bottom, Math.floor(py + stroke.radius) + 1);
       }
+    }
+    left = Math.max(x, left);
+    top = Math.max(y, top);
+    const maskWidth = Math.min(x + w, right) - left;
+    const maskHeight = Math.min(y + h, bottom) - top;
+    if (maskWidth <= 0 || maskHeight <= 0) return outCanvas;
+
+    const maskAlpha = rasterizeMaskAlpha(maskWidth, maskHeight, left, top, mask.strokes);
+    const maskCanvas = document.createElement('canvas');
+    maskCanvas.width = maskWidth;
+    maskCanvas.height = maskHeight;
+    const maskCtx = maskCanvas.getContext('2d', { alpha: true });
+    const imgData = maskCtx.createImageData(maskWidth, maskHeight);
+    for (let i = 0; i < maskAlpha.length; i++) {
+      imgData.data[i * 4 + 3] = 255 - maskAlpha[i];
     }
     maskCtx.putImageData(imgData, 0, 0);
 
-    outCtx.globalCompositeOperation = 'destination-in';
-    outCtx.drawImage(maskCanvas, 0, 0);
+    outCtx.globalCompositeOperation = 'destination-out';
+    outCtx.drawImage(maskCanvas, left - x, top - y);
     outCtx.globalCompositeOperation = 'source-over';
     maskCanvas.width = 0;
     maskCanvas.height = 0;
@@ -428,6 +438,26 @@ export class AssetManager {
     const maskSig = getMaskSignature(mask);
     const bmp = this._cacheGet(`maskreg:${source.id}:${r.x},${r.y},${r.w},${r.h}:${maskSig}`);
     return bmp ? { bitmap: bmp, drawRegion: { x: 0, y: 0, w: r.w, h: r.h }, isCropped: true, isMasked: true } : null;
+  }
+
+  /**
+   * Draw into a preview surface without keeping a second, source-sized copy in the LRU.
+   * The callback consumes the drawable synchronously before it can be evicted.
+   */
+  async withPreviewDrawable(asset, source, mask, draw) {
+    const cached = this.getCellDrawableSync(asset, source, mask);
+    if (cached) return draw(cached);
+
+    const base = await this.getAssetDrawable(asset, source);
+    if (!base || !base.bitmap.width) return;
+    if (!hasMaskStrokes(mask)) return draw(base);
+
+    const bitmap = this._composeMaskedRegionCanvas(base, asset.region, mask);
+    try {
+      return draw({ bitmap, drawRegion: base.drawRegion });
+    } finally {
+      closeBitmapSafe(bitmap);
+    }
   }
 
   /**

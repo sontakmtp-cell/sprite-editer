@@ -41,6 +41,14 @@
       "E10": {
         "status": "PASS",
         "evidence": "Offset +24px in 64px cell -> PNG bbox (24,0,40,64) == JSON V2 contentBoundsCellPx; off-cell -> null; JSON V1 strictly matches base atlas-v1 schema"
+      },
+      "E11": {
+        "status": "PASS",
+        "evidence": "128px brush dragged 5 source pixels preserves the endpoint in exported PNG"
+      },
+      "E12": {
+        "status": "PASS",
+        "evidence": "Fit retains six independently masked previews under bitmap cache pressure and stops redrawing"
       }
     },
     "network_requests": [],
@@ -89,6 +97,14 @@
       "E10": {
         "status": "PASS",
         "evidence": "Offset +24px in 64px cell -> PNG bbox (24,0,40,64) == JSON V2 contentBoundsCellPx; off-cell -> null; JSON V1 strictly matches base atlas-v1 schema"
+      },
+      "E11": {
+        "status": "PASS",
+        "evidence": "128px brush dragged 5 source pixels preserves the endpoint in exported PNG"
+      },
+      "E12": {
+        "status": "PASS",
+        "evidence": "Fit retains six independently masked previews under bitmap cache pressure and stops redrawing"
       }
     },
     "network_requests": [],

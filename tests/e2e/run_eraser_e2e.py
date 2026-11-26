@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sprite Sheet Builder — Per-Cell Eraser/Restore Mask E2E Test Suite (E01–E11).
+Sprite Sheet Builder — Per-Cell Eraser/Restore Mask E2E Test Suite (E01–E12).
 Runs against the built offline dist/sprite-sheet-builder.html over file:// on Windows 11 Chrome & Edge.
 Verifies real UI clicks/drags, DPR=2 accuracy, PNG/WebP pixel buffers, JSON metadata V1/V2,
 .ssb V2/V3 & IndexedDB Recovery round-trip, bad manifest rejection, post-op mask budgets,
@@ -1057,6 +1057,70 @@ def run_eraser_suite_for_browser(browser_name: str, executable_path: Path):
         except Exception as e:
             record("E11", False, str(e))
 
+        # Six distinct masked cells share one source and exceed the source bitmap
+        # cache. The Fit view must finish loading all of them and then stop repainting.
+        try:
+            reset_project(page, cols=6, rows=1, cw=64, ch=64)
+            await_import = """async () => {
+                const app = window.__SSB_APP__;
+                const manager = app.assetManager;
+                manager.maxCachePixels = 3 * 128 * 128;
+                const canvas = document.createElement('canvas');
+                canvas.width = canvas.height = 128;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#ff6030';
+                ctx.fillRect(0, 0, 128, 128);
+                const png = await new Promise((resolve) => canvas.toBlob(resolve));
+                await app.handleIncomingFiles([new File([png], 'shared.png')], { libraryOnly: true });
+                const assetId = app.store.project.assets[0].id;
+                const assignments = Array.from({ length: 6 }, (_, col) => ({ row: 0, col, assetId }));
+                app.store.addSourcesAndAssets('assign shared image', [], [], assignments);
+                app.store.commit('add distinct masks', (project) => {
+                    for (let col = 0; col < 6; col++) {
+                        project.cells['0:' + col].mask = {
+                            strokes: [{ op: 'erase', radius: 8, points: [[32 + col * 8, 64]] }]
+                        };
+                    }
+                });
+                const atlas = app.atlasView;
+                const render = atlas.render;
+                window.__atlasRenderCount = 0;
+                atlas.render = function () {
+                    window.__atlasRenderCount++;
+                    return render.call(this);
+                };
+            }"""
+            page.evaluate(await_import)
+            page.locator("#btn-atlas-fit").click()
+            page.wait_for_timeout(450)
+            result = page.evaluate("""async () => {
+                const atlas = window.__SSB_APP__.atlasView;
+                const { width, height } = atlas.canvas;
+                const pixels = atlas.ctx.getImageData(0, 0, width, height).data;
+                const sampleRed = (col, x, y) => {
+                    const dpr = window.devicePixelRatio;
+                    const bx = Math.round((42 + (col * 64 + x) * atlas.zoom) * dpr);
+                    const by = Math.round((24 + y * atlas.zoom) * dpr);
+                    return pixels[(by * width + bx) * 4];
+                };
+                const kept = [], erased = [];
+                for (let col = 0; col < 6; col++) {
+                    kept.push(sampleRed(col, 48, 24));
+                    erased.push(sampleRed(col, 16 + col * 4, 32));
+                }
+                const before = window.__atlasRenderCount;
+                for (let i = 0; i < 12; i++) {
+                    await new Promise((resolve) => requestAnimationFrame(resolve));
+                }
+                return { kept, erased, redraws: window.__atlasRenderCount - before };
+            }""")
+            assert result["redraws"] == 0, f"Fit repainted while idle: {result}"
+            assert all(red > 170 for red in result["kept"]), f"Fit lost an image: {result}"
+            assert all(red < 120 for red in result["erased"]), f"Fit lost an erasure: {result}"
+            record("E12", True, "Fit retains six independently masked previews under bitmap cache pressure and stops redrawing")
+        except Exception as e:
+            record("E12", False, str(e))
+
         ctx.close()
 
     return {
@@ -1081,7 +1145,7 @@ def main():
     all_reports = []
     total_fail = 0
     for name, exe in targets:
-        print(f"\n=== Running Eraser E2E Suite (E01–E11) on Windows 11 {name} ===", flush=True)
+        print(f"\n=== Running Eraser E2E Suite (E01–E12) on Windows 11 {name} ===", flush=True)
         rep = run_eraser_suite_for_browser(name, exe)
         all_reports.append(rep)
         fails = [k for k, v in rep["results"].items() if v["status"] != "PASS"]
